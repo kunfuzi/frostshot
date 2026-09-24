@@ -5,6 +5,7 @@ mod app_settings;
 mod capture;
 mod config;
 mod draw;
+mod ocr;
 mod output;
 mod pin;
 mod platform;
@@ -53,6 +54,14 @@ enum UserEvent {
     ProjectChosen(Option<PathBuf>),
     /// Аргументы от второго экземпляра (PrintScreen через Windows, двойной клик по .frost).
     Remote(Vec<String>),
+    /// Распознавание текста закончено: зачем запускали, смещение выделения, результат.
+    OcrDone(OcrPurpose, (f32, f32), Result<Vec<ocr::Line>, String>),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OcrPurpose {
+    CopyText,
+    AutoHide,
 }
 
 struct OverlayWin {
@@ -263,6 +272,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Remote(args) => app.handle_args(el, &args),
+            UserEvent::OcrDone(purpose, offset, result) => app.on_ocr_done(el, purpose, offset, result),
             UserEvent::ProjectChosen(p) => {
                 if let Some(p) = p {
                     app.open_project(el, &p);

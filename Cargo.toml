@@ -15,6 +15,7 @@ directories = "6.0.0"
 env_logger = "0.11.11"
 global-hotkey = "0.8.0"
 log = "0.4.34"
+regex = "1.13.1"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -31,6 +32,7 @@ winresource = "0.1.31"
 embed-manifest = "1.5.1"
 
 [target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation", "Foundation_Collections", "Globalization", "Win32_System_WinRT"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Security", "Win32_UI_Input_KeyboardAndMouse"] }
 
 

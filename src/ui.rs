@@ -34,6 +34,8 @@ pub enum Btn {
     Undo,
     Redo,
     Pin,
+    CopyText,
+    AutoHide,
     Upload,
     Copy,
     Save,
@@ -53,6 +55,8 @@ impl Btn {
             Btn::Undo => "Отменить (Ctrl+Z)",
             Btn::Redo => "Повторить (Ctrl+Shift+Z)",
             Btn::Pin => "Закрепить поверх окон (P)",
+            Btn::CopyText => "Копировать текст (Ctrl+Shift+C)",
+            Btn::AutoHide => "Скрыть личные данные (H): почта, телефоны, карты, ключи",
             Btn::Upload => "Облако (скоро)",
             Btn::Copy => "Копировать (Ctrl+C, Enter)",
             Btn::Save => "Сохранить…",
@@ -93,6 +97,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
 
     // Вертикальная панель инструментов.
     let mut vitems: Vec<Btn> = Tool::ALL.iter().map(|t| Btn::Tool(*t)).collect();
+    vitems.push(Btn::AutoHide);
     vitems.push(Btn::Color);
     vitems.push(Btn::Undo);
     vitems.push(Btn::Redo);
@@ -116,7 +121,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     }
 
     // Горизонтальная панель действий.
-    let hitems = [Btn::Upload, Btn::Pin, Btn::Copy, Btn::Save, Btn::Close];
+    let hitems = [Btn::Upload, Btn::CopyText, Btn::Pin, Btn::Copy, Btn::Save, Btn::Close];
     let (hw, hh) = (hitems.len() as f32 * b + 2.0 * pad, b + 2.0 * pad);
     let mut hy = bbox.bottom() + gap;
     if hy + hh > mh {
@@ -372,6 +377,29 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
                 draw::stroke_path(pm, &path, fg, 1.0, w, None);
             }
             tri(pm, (24.0, 14.0), (18.0, 9.0), (18.0, 19.0));
+        }
+        Btn::Tool(Tool::Ruler) => {
+            ln(pm, (7.0, 20.0), (25.0, 20.0), w, 1.0);
+            for (i, x) in [7.0, 11.5, 16.0, 20.5, 25.0].iter().enumerate() {
+                let h = if i % 2 == 0 { 8.0 } else { 4.5 };
+                ln(pm, (*x, 20.0), (*x, 20.0 - h), w * 0.8, 1.0);
+            }
+        }
+        Btn::AutoHide => {
+            // Глаз, перечёркнутый наискось.
+            let a = p(7.0, 11.0);
+            if let Some(path) = Rect::from_xywh(a.0, a.1, 18.0 * k, 10.0 * k).and_then(PathBuilder::from_oval) {
+                draw::stroke_path(pm, &path, fg, 1.0, w * 0.8, None);
+            }
+            let c = p(16.0, 16.0);
+            draw::circle(pm, c.0, c.1, 2.5 * k, fg, 1.0, true, 0.0);
+            ln(pm, (8.0, 24.0), (24.0, 8.0), w, 1.0);
+        }
+        Btn::CopyText => {
+            rect_outline(pm, 9.0, 7.0, 14.0, 18.0, false);
+            for y in [12.0, 16.0, 20.0] {
+                ln(pm, (12.0, y), (20.0, y), w * 0.7, 1.0);
+            }
         }
         Btn::Pin => {
             // Канцелярская кнопка: шляпка, корпус, игла.

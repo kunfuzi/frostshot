@@ -302,6 +302,7 @@ pub fn run(dir: &Path) -> i32 {
         }
     }
     c.ok("width hint scheduled", s.width_hint_deadline().is_some());
+    std::thread::sleep(crate::session::WIDTH_HINT + std::time::Duration::from_millis(100));
     s.expire_width_hint();
     c.ok("width hint expires", s.width_hint_deadline().is_none());
     if let Some(mut sheet) = tiny_skia::Pixmap::new(220 * tiles.len() as u32, 210) {
@@ -336,6 +337,10 @@ pub fn run(dir: &Path) -> i32 {
     drag(&mut s, 0, (200.0, 200.0), (400.0, 400.0));
     c.ok("ctrl+0 resets zoom", s.result().is_some_and(|i| i.width() == 200));
 
+    // Линейка: подпись длины и отрисовка.
+    c.ok("ruler label", crate::shapes::ruler_label((0.0, 0.0), (200.0, 150.0)) == "250 px (200 × 150)");
+    c.ok("ruler label straight", crate::shapes::ruler_label((10.0, 5.0), (130.0, 5.0)) == "120 px");
+
     // 7. Правый клик сбрасывает, второй закрывает.
     c.ok("right click resets selection", s.on_right_press() == Action::None && s.result().is_none());
     c.ok("second right click closes", s.on_right_press() == Action::Close);
@@ -351,6 +356,51 @@ pub fn run(dir: &Path) -> i32 {
     let frame = s.render(0).clone();
     output::save_png(&frame, &dir.join("frame_idle.png")).ok();
 
+    ocr_check(&mut c, dir);
+
     println!("{} failures", c.fails);
     if c.fails == 0 { 0 } else { 1 }
+}
+
+/// Сквозная проверка: картинка с личными данными -> распознавание Windows -> поиск -> скрытие.
+fn ocr_check(c: &mut Check, dir: &Path) {
+    let Some(font) = draw::load_font() else { return };
+    let (w, h) = (900u32, 260u32);
+    let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
+    pm.fill(tiny_skia::Color::WHITE);
+    let lines = [
+        "Почта: ivan.petrov@example.com",
+        "Телефон: +7 912 345-67-89",
+        "Карта: 4276 3801 2345 6787",
+        "Пароль: Qwerty2026 и токен ghp_A1b2C3d4E5f6G7h8I9j0KLMN",
+    ];
+    for (i, t) in lines.iter().enumerate() {
+        draw::draw_text(&mut pm, &font, t, 20.0, 20.0 + i as f32 * 56.0, 28.0, [0x11, 0x11, 0x11], 1.0, None);
+    }
+    output::save_png(&pm, &dir.join("ocr_input.png")).ok();
+    let t0 = std::time::Instant::now();
+    match crate::platform::ocr_recognize(&pm) {
+        Ok(ls) => {
+            println!("INFO ocr {:?}: {:?}", t0.elapsed(), crate::ocr::text_of(&ls));
+            let found = crate::ocr::find_sensitive(&ls, 3.0);
+            println!("INFO {}", crate::ocr::summary(&found));
+            let kinds: Vec<_> = found.iter().map(|(k, _)| *k).collect();
+            use crate::ocr::Kind;
+            for k in [Kind::Email, Kind::Phone, Kind::Card, Kind::Secret] {
+                c.ok(&format!("ocr finds {}", k.label()), kinds.contains(&k));
+            }
+            // Через сессию: скрытие меняет пиксели на месте почты.
+            let shot = crate::capture::MonitorShot { x: 0, y: 0, pixmap: pm.clone() };
+            let mut s = Session::new(vec![shot], vec![1.0], 0.5, 0xE24B4A, 4.0, Some(Arc::new(font)));
+            s.on_left_press(0, 5.0, 5.0);
+            s.on_left_release(0, 6.0, 5.0);
+            let before = s.result().unwrap();
+            let rects: Vec<_> = found.iter().map(|(_, r)| *r).collect();
+            s.apply_hide(&rects);
+            let after = s.result().unwrap();
+            output::save_png(&after, &dir.join("ocr_hidden.png")).ok();
+            c.ok("auto-hide changes the image", before.data() != after.data());
+        }
+        Err(e) => println!("INFO ocr unavailable: {e}"),
+    }
 }

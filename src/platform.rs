@@ -603,3 +603,58 @@ pub fn force_foreground(window: &winit::window::Window) {
     #[cfg(not(windows))]
     window.focus_window();
 }
+
+/// Распознать текст на картинке (RGBA premultiplied, непрозрачная). Windows: Windows.Media.Ocr,
+/// локально, языки из профиля пользователя. Блокирующий вызов: только из фонового потока.
+pub fn ocr_recognize(img: &tiny_skia::Pixmap) -> Result<Vec<crate::ocr::Line>, String> {
+    #[cfg(windows)]
+    {
+        use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap};
+        use windows::Media::Ocr::OcrEngine;
+        use windows::Storage::Streams::DataWriter;
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+        let e = |e: windows::core::Error| format!("OCR: {}", e.message());
+        // SAFETY: инициализация WinRT для текущего (фонового) потока.
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| "Нет языка распознавания: добавьте пакет OCR в «Язык и регион» Windows".to_string())?;
+        let max = OcrEngine::MaxImageDimension().unwrap_or(4096) as f32;
+        // Мелкий текст распознаётся лучше, если картинку увеличить; большие уменьшаем до предела.
+        let (w, h) = (img.width() as f32, img.height() as f32);
+        let mut k = if w.max(h) * 2.0 <= max { 2.0 } else { 1.0 };
+        if w.max(h) * k > max {
+            k = max / w.max(h);
+        }
+        let (sw, sh) = (((w * k).round() as u32).max(1), ((h * k).round() as u32).max(1));
+        let mut scaled = tiny_skia::Pixmap::new(sw, sh).ok_or("OCR: пустая картинка")?;
+        let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bicubic, ..Default::default() };
+        scaled.draw_pixmap(0, 0, img.as_ref(), &paint, tiny_skia::Transform::from_scale(k, k), None);
+        let mut bgra = scaled.data().to_vec();
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let writer = DataWriter::new().map_err(e)?;
+        writer.WriteBytes(&bgra).map_err(e)?;
+        let buffer = writer.DetachBuffer().map_err(e)?;
+        let bmp = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(&buffer, BitmapPixelFormat::Bgra8, sw as i32, sh as i32, BitmapAlphaMode::Premultiplied)
+            .map_err(e)?;
+        let result = engine.RecognizeAsync(&bmp).map_err(e)?.join().map_err(e)?;
+        let mut lines = Vec::new();
+        for line in result.Lines().map_err(e)? {
+            let mut words = Vec::new();
+            for word in line.Words().map_err(e)? {
+                let r = word.BoundingRect().map_err(e)?;
+                words.push(crate::ocr::Word {
+                    text: word.Text().map_err(e)?.to_string(),
+                    rect: (r.X / k, r.Y / k, r.Width / k, r.Height / k),
+                });
+            }
+            lines.push(crate::ocr::Line { words });
+        }
+        Ok(lines)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = img;
+        Err("Распознавание текста пока есть только в Windows".into())
+    }
+}

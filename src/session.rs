@@ -20,6 +20,10 @@ pub enum Action {
     QuickSave,
     SaveProject,
     Pin,
+    /// Распознать текст выделения и скопировать его.
+    CopyText,
+    /// Найти и запикселить личные данные в выделении.
+    AutoHide,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -108,7 +112,14 @@ pub struct Session {
     counter_target_first: bool,
     /// Когда крутили колесо толщины: плашка с образцом видна WIDTH_HINT.
     width_hint_at: Option<std::time::Instant>,
+    /// Строка статуса внизу экрана (распознавание, «Скрыто: …»); None у времени: пока не сменят.
+    status: Option<(String, Option<std::time::Instant>)>,
+    /// Идёт распознавание текста в фоне.
+    pub ocr_busy: bool,
 }
+
+/// Сколько держать строку статуса.
+pub const STATUS_TIME: std::time::Duration = std::time::Duration::from_millis(3500);
 
 /// Сколько показывать образец толщины после прокрутки колеса.
 pub const WIDTH_HINT: std::time::Duration = std::time::Duration::from_millis(1200);
@@ -190,6 +201,8 @@ impl Session {
             save_menu: false,
             counter_target_first: false,
             width_hint_at: None,
+            status: None,
+            ocr_busy: false,
         }
     }
 
@@ -415,6 +428,8 @@ impl Session {
             Btn::Undo => self.undo(),
             Btn::Redo => self.redo_last(),
             Btn::Pin => return Action::Pin,
+            Btn::CopyText => return Action::CopyText,
+            Btn::AutoHide => return Action::AutoHide,
             Btn::Upload => {}
             Btn::Copy => return Action::Copy,
             Btn::Save => {
@@ -545,6 +560,7 @@ impl Session {
                         }
                         Kind::Counter { .. } => {}
                         Kind::Pixelate(_, b) => *b = p,
+                        Kind::Ruler(a, b) => *b = if shift { snap45(*a, p) } else { p },
                         Kind::Text { .. } => {}
                     }
                     self.mark_sel();
@@ -595,6 +611,7 @@ impl Session {
                     Kind::Counter { at: p, n: self.next_counter(), tip: Some(p) }
                 }
                 Tool::Pixelate => Kind::Pixelate(p, p),
+                Tool::Ruler => Kind::Ruler(p, p),
                 Tool::Text => {
                     let fs = shapes::font_size(w);
                     self.text = Some(TextEdit { at: (p.0, p.1 - fs * 0.6), text: String::new() });
@@ -777,17 +794,57 @@ impl Session {
         self.mark(mon);
     }
 
-    /// Когда спрятать образец толщины (для таймера цикла событий).
+    /// Когда спрятать образец толщины или строку статуса (для таймера цикла событий).
     pub fn width_hint_deadline(&self) -> Option<std::time::Instant> {
-        self.width_hint_at.map(|t| t + WIDTH_HINT)
+        let hint = self.width_hint_at.map(|t| t + WIDTH_HINT);
+        let status = self.status.as_ref().and_then(|(_, t)| t.map(|t| t + STATUS_TIME));
+        hint.into_iter().chain(status).min()
     }
 
-    /// Время образца вышло: убрать его с экрана.
+    /// Показать строку статуса; sticky: держать, пока не заменят.
+    pub fn set_status(&mut self, text: impl Into<String>, sticky: bool) {
+        self.status = Some((text.into(), (!sticky).then(std::time::Instant::now)));
+        self.mark_all();
+    }
+
+    fn mark_all(&mut self) {
+        for d in &mut self.dirty {
+            *d = true;
+        }
+    }
+
+    /// Снимок выделения без разметки (для распознавания) и его смещение в координатах снимка.
+    pub fn ocr_source(&mut self) -> Option<(Pixmap, (f32, f32))> {
+        self.sync();
+        let mon = self.active?;
+        let b = self.sel.as_ref()?.bbox()?;
+        let crop = self.shots[mon].pixmap.clone_rect(tiny_skia::IntRect::from_xywh(b.x as i32, b.y as i32, b.w, b.h)?)?;
+        Some((crop, (b.x as f32, b.y as f32)))
+    }
+
+    /// Запикселить найденные области (координаты снимка). Каждая область отменяется отдельно.
+    pub fn apply_hide(&mut self, rects: &[Rect]) {
+        let c = draw::rgb(self.color);
+        for r in rects {
+            let kind = Kind::Pixelate((r.left(), r.top()), (r.right(), r.bottom()));
+            // Мелкие блоки: текст не читается, но видно, что там было.
+            self.push_shape(Shape { kind, color: c, width: 2.0 });
+        }
+        self.mark_sel();
+    }
+
+    /// Время образца или статуса вышло: убрать с экрана.
     pub fn expire_width_hint(&mut self) {
-        if self.width_hint_at.take().is_some() {
+        let now = std::time::Instant::now();
+        if self.width_hint_at.is_some_and(|t| now >= t + WIDTH_HINT) {
+            self.width_hint_at = None;
             if let Some((m, _)) = self.cursor {
                 self.mark(m);
             }
+        }
+        if self.status.as_ref().is_some_and(|(_, t)| t.is_some_and(|t| now >= t + STATUS_TIME)) {
+            self.status = None;
+            self.mark_all();
         }
     }
 
@@ -841,6 +898,7 @@ impl Session {
         let Some(code) = code else { return Action::None };
         if shortcut_ctrl {
             return match code {
+                KeyCode::KeyC if sel && self.mods.shift => Action::CopyText,
                 KeyCode::KeyC if sel => Action::Copy,
                 KeyCode::KeyS if sel && self.mods.shift => Action::QuickSave,
                 KeyCode::KeyS if sel => Action::Save,
@@ -866,6 +924,9 @@ impl Session {
         if code == KeyCode::KeyP && sel {
             return Action::Pin;
         }
+        if code == KeyCode::KeyH && sel {
+            return Action::AutoHide;
+        }
         let tool = match code {
             KeyCode::KeyV => Some(Tool::SelectRect),
             KeyCode::KeyL => Some(Tool::SelectLasso),
@@ -879,6 +940,7 @@ impl Session {
             KeyCode::Digit8 => Some(Tool::FilledRect),
             KeyCode::Digit9 => Some(Tool::Ellipse),
             KeyCode::Digit0 => Some(Tool::Counter),
+            KeyCode::KeyR => Some(Tool::Ruler),
             _ => None,
         };
         if let Some(t) = tool {
@@ -1085,10 +1147,16 @@ impl Session {
                 let (w, _) = ui::label_size(f, hint, s);
                 ui::label(frame, f, hint, ((frame.width() as f32 - w) / 2.0).max(0.0), 16.0 * s, s);
             }
+            let mut bottom = frame.height() as f32 - 16.0 * s;
             if !view.is_one() {
                 let text = format!("Масштаб {}%  ·  Ctrl+0: 100%  ·  средняя кнопка: сдвиг", (view.z * 100.0).round());
                 let (w, h) = ui::label_size(f, &text, s);
-                ui::label(frame, f, &text, ((frame.width() as f32 - w) / 2.0).max(0.0), frame.height() as f32 - h - 16.0 * s, s);
+                ui::label(frame, f, &text, ((frame.width() as f32 - w) / 2.0).max(0.0), bottom - h, s);
+                bottom -= h + 8.0 * s;
+            }
+            if let (Some((text, _)), true) = (&self.status, is_active) {
+                let (w, h) = ui::label_size(f, text, s);
+                ui::label(frame, f, text, ((frame.width() as f32 - w) / 2.0).max(0.0), bottom - h, s);
             }
         }
         &self.frame[mon]

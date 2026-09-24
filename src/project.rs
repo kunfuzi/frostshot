@@ -129,6 +129,7 @@ fn sanitize(h: &mut Header) -> Result<(), String> {
                 ok_pt(a) && ok_pt(b)
             }
             Kind::Counter { at, n, tip } => ok_pt(at) && tip.as_ref().is_none_or(ok_pt) && *n <= 10_000,
+            Kind::Ruler(a, b) => ok_pt(a) && ok_pt(b),
             Kind::Text { at, text } => ok_pt(at) && text.chars().count() <= MAX_TEXT,
         };
         if !pts_ok {

@@ -311,6 +311,8 @@ impl App {
                     Err(e) => log::error!("pin: {e}"),
                 }
             }
+            Action::CopyText => self.start_ocr(OcrPurpose::CopyText),
+            Action::AutoHide => self.start_ocr(OcrPurpose::AutoHide),
             Action::QuickSave => {
                 let Some(img) = self.overlay.as_mut().and_then(|o| o.session.result()) else { return };
                 let path = self.config.save_dir.join(output::default_file_name(&self.config.file_template));
@@ -354,6 +356,77 @@ impl App {
                     name,
                     ("Проект Frostshot", project::EXT),
                 );
+            }
+        }
+    }
+
+    /// Распознать выделение в фоновом потоке: оверлей не подвисает.
+    fn start_ocr(&mut self, purpose: OcrPurpose) {
+        let Some(ov) = self.overlay.as_mut() else { return };
+        if ov.session.ocr_busy {
+            return;
+        }
+        let Some((crop, offset)) = ov.session.ocr_source() else { return };
+        ov.session.ocr_busy = true;
+        ov.session.set_status("Распознаю текст…", true);
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            let result = platform::ocr_recognize(&crop);
+            log::info!("ocr {}x{} in {:?}: {}", crop.width(), crop.height(), t0.elapsed(), match &result {
+                Ok(l) => format!("{} lines", l.len()),
+                Err(e) => e.clone(),
+            });
+            let _ = proxy.send_event(UserEvent::OcrDone(purpose, offset, result));
+        });
+    }
+
+    pub(crate) fn on_ocr_done(&mut self, el: &ActiveEventLoop, purpose: OcrPurpose, offset: (f32, f32), result: Result<Vec<ocr::Line>, String>) {
+        // Оверлей могли закрыть, пока шло распознавание.
+        let Some(ov) = self.overlay.as_mut() else { return };
+        ov.session.ocr_busy = false;
+        let lines = match result {
+            Ok(l) => l,
+            Err(e) => {
+                ov.session.set_status(e, false);
+                return;
+            }
+        };
+        match purpose {
+            OcrPurpose::AutoHide => {
+                let found = ocr::find_sensitive(&lines, 3.0);
+                let rects: Vec<_> = found
+                    .iter()
+                    .filter_map(|(_, r)| tiny_skia::Rect::from_xywh(r.x() + offset.0, r.y() + offset.1, r.width(), r.height()))
+                    .collect();
+                ov.session.apply_hide(&rects);
+                ov.session.set_status(ocr::summary(&found), false);
+            }
+            OcrPurpose::CopyText => {
+                let text = ocr::text_of(&lines);
+                if text.trim().is_empty() {
+                    ov.session.set_status("Текст не найден", false);
+                    return;
+                }
+                let n = lines.len();
+                let thumb = ov.session.result();
+                if self.clipboard.is_none() {
+                    self.clipboard = arboard::Clipboard::new().ok();
+                }
+                match self.clipboard.as_mut().map(|cb| cb.set_text(text)) {
+                    Some(Ok(())) => {
+                        let title = format!("Текст скопирован: {n} {}", plural(n, "строка", "строки", "строк"));
+                        match thumb {
+                            Some(t) => self.finish_overlay(el, Some(title), &t),
+                            None => self.close_overlay(),
+                        }
+                    }
+                    _ => {
+                        if let Some(ov) = self.overlay.as_mut() {
+                            ov.session.set_status("Не удалось записать в буфер обмена", false);
+                        }
+                    }
+                }
             }
         }
     }
@@ -550,5 +623,14 @@ pub(crate) fn present(w: &mut OverlayWin, s: &mut Session) {
     }
     if let Err(e) = buf.present() {
         log::error!("present: {e}");
+    }
+}
+
+/// 1 строка, 2 строки, 5 строк.
+fn plural(n: usize, one: &'static str, few: &'static str, many: &'static str) -> &'static str {
+    match (n % 10, n % 100) {
+        (1, x) if x != 11 => one,
+        (2..=4, x) if !(12..=14).contains(&x) => few,
+        _ => many,
     }
 }
