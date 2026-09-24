@@ -16,26 +16,78 @@ pub struct Tray {
     pub quit_id: MenuId,
 }
 
-/// Иконка: синий скруглённый квадрат со снежинкой.
+/// Иконка: тёмно-синий градиент, уголки кропа и ледяной кристалл из четырёх граней.
+/// Рисуется в сетке 128x128 и масштабируется; в мелких размерах уголки толще.
 pub fn icon_pixmap(size: u32) -> Pixmap {
+    use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Point, SpreadMode, Transform};
     let mut pm = Pixmap::new(size, size).unwrap();
     let s = size as f32;
-    crate::draw::fill_rounded(&mut pm, Rect::from_xywh(0.0, 0.0, s, s).unwrap(), s * 0.22, [0x37, 0x8a, 0xdd], 1.0);
-    let c = s / 2.0;
-    let r = s * 0.34;
-    let w = (s / 14.0).max(1.5);
-    for i in 0..3 {
-        let a = i as f32 * std::f32::consts::PI / 3.0 + std::f32::consts::FRAC_PI_2;
-        let (dx, dy) = (a.cos() * r, a.sin() * r);
-        crate::draw::line(&mut pm, c - dx, c - dy, c + dx, c + dy, [255, 255, 255], 1.0, w, None);
-        for sign in [-1.0f32, 1.0] {
-            let (tx, ty) = (c + sign * dx * 0.62, c + sign * dy * 0.62);
-            for off in [-0.6f32, 0.6] {
-                let b = a + off + if sign < 0.0 { std::f32::consts::PI } else { 0.0 };
-                let l = r * 0.33;
-                crate::draw::line(&mut pm, tx, ty, tx + b.cos() * l, ty + b.sin() * l, [255, 255, 255], 1.0, w * 0.8, None);
-            }
+    let k = s / 128.0;
+    let small = size <= 24;
+
+    // Фон: градиент от яркого синего слева сверху к глубокому снизу справа.
+    if let Some(path) = crate::draw::rounded_rect(Rect::from_xywh(0.0, 0.0, s, s).unwrap(), 28.0 * k) {
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+        paint.shader = LinearGradient::new(
+            Point::from_xy(0.0, 0.0),
+            Point::from_xy(s, s),
+            vec![
+                GradientStop::new(0.0, Color::from_rgba8(0x2f, 0x7f, 0xe0, 255)),
+                GradientStop::new(1.0, Color::from_rgba8(0x0a, 0x33, 0x7a, 255)),
+            ],
+            SpreadMode::Pad,
+            Transform::identity(),
+        )
+        .unwrap_or(tiny_skia::Shader::SolidColor(Color::from_rgba8(0x1f, 0x5f, 0xa8, 255)));
+        pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+
+    // Уголки кропа.
+    let corner = [0xd6, 0xec, 0xff];
+    let (m, len) = (22.0, 22.0);
+    let w = if small { 12.0 } else { 9.0 } * k;
+    let p = |x: f32, y: f32| (x * k, y * k);
+    for (cx, cy, dx, dy) in [(m, m, 1.0, 1.0), (128.0 - m, m, -1.0, 1.0), (m, 128.0 - m, 1.0, -1.0), (128.0 - m, 128.0 - m, -1.0, -1.0)] {
+        let mut pb = PathBuilder::new();
+        let a = p(cx, cy + dy * len);
+        let b = p(cx, cy);
+        let c = p(cx + dx * len, cy);
+        pb.move_to(a.0, a.1);
+        pb.line_to(b.0, b.1);
+        pb.line_to(c.0, c.1);
+        if let Some(path) = pb.finish() {
+            crate::draw::stroke_path(&mut pm, &path, corner, 1.0, w, None);
         }
+    }
+
+    // Кристалл: ромб, четыре грани разной яркости, как у огранённого льда.
+    let (top, right, bottom, left, mid) = (p(64.0, 30.0), p(92.0, 64.0), p(64.0, 98.0), p(36.0, 64.0), p(64.0, 60.0));
+    let facets: [([(f32, f32); 3], [u8; 3]); 4] = [
+        ([top, left, mid], [0xbf, 0xe3, 0xff]),
+        ([top, right, mid], [0xff, 0xff, 0xff]),
+        ([left, bottom, mid], [0x6f, 0xb6, 0xf2]),
+        ([right, bottom, mid], [0x9c, 0xd0, 0xfa]),
+    ];
+    for (pts, c) in facets {
+        let mut pb = PathBuilder::new();
+        pb.move_to(pts[0].0, pts[0].1);
+        pb.line_to(pts[1].0, pts[1].1);
+        pb.line_to(pts[2].0, pts[2].1);
+        pb.close();
+        if let Some(path) = pb.finish() {
+            pm.fill_path(&path, &crate::draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+        }
+    }
+    // Лёгкий контур, чтобы кристалл не сливался с фоном в мелком размере.
+    let mut pb = PathBuilder::new();
+    pb.move_to(top.0, top.1);
+    pb.line_to(right.0, right.1);
+    pb.line_to(bottom.0, bottom.1);
+    pb.line_to(left.0, left.1);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        crate::draw::stroke_path(&mut pm, &path, [0xe8, 0xf6, 0xff], 0.9, (1.6 * k).max(0.8), None);
     }
     pm
 }
