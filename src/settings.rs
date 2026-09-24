@@ -29,6 +29,8 @@ pub enum Ctl {
     Autostart,
     Notify,
     AutoHide,
+    History,
+    HistoryClear,
     SaveOnCopy,
     DirChange,
     DirOpen,
@@ -63,6 +65,8 @@ pub struct Fx {
     pub shell_register: Option<bool>,
     pub default_apps: bool,
     pub keyboard_settings: bool,
+    pub history: bool,
+    pub history_clear: bool,
 }
 
 pub struct Settings {
@@ -238,6 +242,12 @@ impl Settings {
                 cfg.notify = !cfg.notify;
                 fx.save = true;
             }
+            Some(Ctl::History) => {
+                cfg.history = !cfg.history;
+                fx.save = true;
+                fx.history = true;
+            }
+            Some(Ctl::HistoryClear) => fx.history_clear = true,
             Some(Ctl::AutoHide) => {
                 cfg.auto_hide = !cfg.auto_hide;
                 fx.save = true;
@@ -457,6 +467,7 @@ impl Settings {
             (Ctl::Autostart, cfg.autostart, "Запускать при входе в систему"),
             (Ctl::Notify, cfg.notify, "Уведомление после снимка (клик: доработать)"),
             (Ctl::AutoHide, cfg.auto_hide, "Скрывать личные данные автоматически (почта, телефоны, карты, ключи)"),
+            (Ctl::History, cfg.history, "Хранить историю снимков (10 последних, 7 дней, в меню трея)"),
             (Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку"),
         ] {
             let bs = (f + 2.0) * s;
@@ -629,7 +640,8 @@ impl Settings {
         // Кнопки.
         let mut bx = pad;
         bx += button(pm, rects, Ctl::OpenConfig, bx, y, "Открыть config.toml", false) + 8.0 * s;
-        button(pm, rects, Ctl::Reset, bx, y, "Сбросить", false);
+        bx += button(pm, rects, Ctl::Reset, bx, y, "Сбросить", false) + 8.0 * s;
+        button(pm, rects, Ctl::HistoryClear, bx, y, "Очистить историю", false);
         let done_w = tw("Готово", body) + 28.0 * s;
         button(pm, rects, Ctl::Close, w - pad - done_w, y, "Готово", true);
         y += row + pad;

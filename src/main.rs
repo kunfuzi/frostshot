@@ -5,6 +5,7 @@ mod app_settings;
 mod capture;
 mod config;
 mod draw;
+mod history;
 mod ocr;
 mod output;
 mod pin;
@@ -54,6 +55,8 @@ enum UserEvent {
     ProjectChosen(Option<PathBuf>),
     /// Аргументы от второго экземпляра (PrintScreen через Windows, двойной клик по .frost).
     Remote(Vec<String>),
+    /// Снимок записан в историю (или история очищена): обновить меню трея.
+    HistoryChanged,
     /// Распознавание текста закончено: зачем запускали, смещение выделения, результат.
     OcrDone(OcrPurpose, (f32, f32), Result<Vec<ocr::Line>, String>),
 }
@@ -123,6 +126,8 @@ impl App {
             Ok(t) => self.tray = Some(t),
             Err(e) => log::error!("tray: {e}"),
         }
+        history::prune(self.config.history_max, self.config.history_days);
+        self.refresh_history();
         self.clipboard = arboard::Clipboard::new().map_err(|e| log::warn!("clipboard: {e}")).ok();
 
         // Регистрация в Windows указывает на путь exe: после переноса программы обновляем её.
@@ -165,6 +170,14 @@ impl App {
             self.open_project(el, std::path::Path::new(p));
         } else if args.iter().any(|a| a == "--capture" || a.to_lowercase().starts_with("ms-screenclip:")) {
             self.start_capture(el);
+        }
+    }
+
+    fn refresh_history(&mut self) {
+        let entries = if self.config.history { history::list() } else { Vec::new() };
+        let on = self.config.history;
+        if let Some(t) = &mut self.tray {
+            t.set_history(&entries, on);
         }
     }
 
@@ -242,6 +255,22 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Tray(_) => {}
             UserEvent::Menu(e) => {
                 let Some(t) = &app.tray else { return };
+                if let Some((_, path)) = t.history_items.iter().find(|(id, _)| *id == e.id) {
+                    let path = path.clone();
+                    app.open_project(el, &path);
+                    return;
+                }
+                if e.id == t.history_folder_id {
+                    if let Some(d) = history::dir() {
+                        platform::open_folder(&d);
+                    }
+                    return;
+                }
+                if e.id == t.history_clear_id {
+                    history::clear();
+                    app.refresh_history();
+                    return;
+                }
                 if e.id == t.capture_id {
                     app.start_capture(el);
                 } else if e.id == t.last_id {
@@ -274,6 +303,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Remote(args) => app.handle_args(el, &args),
+            UserEvent::HistoryChanged => app.refresh_history(),
             UserEvent::OcrDone(purpose, offset, result) => app.on_ocr_done(el, purpose, offset, result),
             UserEvent::ProjectChosen(p) => {
                 if let Some(p) = p {

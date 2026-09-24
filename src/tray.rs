@@ -1,11 +1,17 @@
 use tiny_skia::{Pixmap, Rect};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem};
+use std::path::PathBuf;
+use tray_icon::menu::{CheckMenuItem, IconMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
     icon: TrayIcon,
     capture: MenuItem,
     last: MenuItem,
+    history: Submenu,
+    /// Пункт истории -> файл проекта.
+    pub history_items: Vec<(MenuId, PathBuf)>,
+    pub history_folder_id: MenuId,
+    pub history_clear_id: MenuId,
     autostart: CheckMenuItem,
     pub capture_id: MenuId,
     pub last_id: MenuId,
@@ -130,6 +136,7 @@ impl Tray {
     pub fn build(hotkey_label: &str, autostart: bool) -> Result<Tray, String> {
         let capture = MenuItem::new(capture_label(hotkey_label), true, None);
         let last = MenuItem::new("Открыть последний снимок", false, None);
+        let history = Submenu::new("История", true);
         let open_project = MenuItem::new("Открыть проект…", true, None);
         let folder = MenuItem::new("Открыть папку со снимками", true, None);
         let settings = MenuItem::new("Настройки…", true, None);
@@ -139,6 +146,7 @@ impl Tray {
         menu.append_items(&[
             &capture,
             &last,
+            &history,
             &open_project,
             &folder,
             &PredefinedMenuItem::separator(),
@@ -169,6 +177,10 @@ impl Tray {
             quit_id: quit.id().clone(),
             capture,
             last,
+            history,
+            history_items: Vec::new(),
+            history_folder_id: MenuId::new("history-folder"),
+            history_clear_id: MenuId::new("history-clear"),
             autostart: auto,
         })
     }
@@ -176,6 +188,31 @@ impl Tray {
     pub fn set_hotkey_label(&self, hotkey_label: &str) {
         self.capture.set_text(capture_label(hotkey_label));
         let _ = self.icon.set_tooltip(Some(format!("Frostshot: {hotkey_label}")));
+    }
+
+    /// Пересобрать подменю «История» из списка снимков.
+    pub fn set_history(&mut self, entries: &[crate::history::Entry], enabled: bool) {
+        while self.history.remove_at(0).is_some() {}
+        self.history_items.clear();
+        if !enabled {
+            let _ = self.history.append(&MenuItem::new("Выключена в настройках", false, None));
+            return;
+        }
+        if entries.is_empty() {
+            let _ = self.history.append(&MenuItem::new("Пока пусто", false, None));
+        }
+        for e in entries {
+            let icon = std::fs::read(&e.thumb)
+                .ok()
+                .and_then(|b| Pixmap::decode_png(&b).ok())
+                .and_then(|p| tray_icon::menu::Icon::from_rgba(rgba_straight(&p), p.width(), p.height()).ok());
+            let item = IconMenuItem::new(&e.label, true, icon, None);
+            self.history_items.push((item.id().clone(), e.path.clone()));
+            let _ = self.history.append(&item);
+        }
+        let _ = self.history.append(&PredefinedMenuItem::separator());
+        let _ = self.history.append(&MenuItem::with_id(self.history_folder_id.clone(), "Открыть папку истории", true, None));
+        let _ = self.history.append(&MenuItem::with_id(self.history_clear_id.clone(), "Очистить историю", !entries.is_empty(), None));
     }
 
     pub fn set_last_enabled(&self, on: bool) {

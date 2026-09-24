@@ -253,23 +253,28 @@ impl Session {
 
     /// Проект `.frost`: снимок монитора с выделением, маска, фигуры.
     pub fn to_project(&mut self) -> Result<Vec<u8>, String> {
+        let (header, shot) = self.project_parts().ok_or("нет выделения")?;
+        crate::project::build(header, &shot)
+    }
+
+    /// Заголовок проекта и копия снимка: PNG можно закодировать в фоновом потоке.
+    pub fn project_parts(&mut self) -> Option<(crate::project::Header, Pixmap)> {
         self.commit_text();
-        let mon = self.active.ok_or("нет выделения")?;
-        let sel = self.sel.as_ref().ok_or("нет выделения")?;
-        let shot = &self.shots[mon].pixmap;
-        let png = shot.encode_png().map_err(|e| e.to_string())?;
+        let mon = self.active?;
+        let sel = self.sel.as_ref()?;
+        let shot = self.shots[mon].pixmap.clone();
         let header = crate::project::Header {
             version: crate::project::VERSION,
             app_version: env!("CARGO_PKG_VERSION").into(),
             width: shot.width(),
             height: shot.height(),
-            png_len: png.len(),
+            png_len: 0,
             selection: sel.ops.iter().map(crate::project::op_to_dto).collect(),
             shapes: self.shapes.clone(),
             color: self.color,
             line_width: self.width,
         };
-        crate::project::encode(&header, &png)
+        Some((header, shot))
     }
 
     /// Сессия из проекта; снимок ставится в левый верхний угол монитора (x, y).

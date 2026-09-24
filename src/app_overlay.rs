@@ -215,6 +215,21 @@ impl App {
         let mut session = ov.session;
         self.save_style(&session);
         let rect = session.active_rect();
+        if self.config.history {
+            // Проект в историю: PNG кодируется в фоне, меню трея обновится по событию.
+            if let Some((header, shot)) = session.project_parts() {
+                let (thumb, proxy) = (thumb.clone(), self.proxy.clone());
+                let (max, days) = (self.config.history_max, self.config.history_days);
+                std::thread::spawn(move || {
+                    match crate::project::build(header, &shot).and_then(|b| crate::history::save(&b, &thumb)) {
+                        Ok(p) => log::info!("history: {}", p.display()),
+                        Err(e) => log::warn!("history: {e}"),
+                    }
+                    crate::history::prune(max, days);
+                    let _ = proxy.send_event(UserEvent::HistoryChanged);
+                });
+            }
+        }
         session.hibernate();
         self.last = Some(session);
         self.last_at = std::time::Instant::now();

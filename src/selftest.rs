@@ -357,6 +357,7 @@ pub fn run(dir: &Path) -> i32 {
     output::save_png(&frame, &dir.join("frame_idle.png")).ok();
 
     ocr_check(&mut c, dir);
+    history_check(&mut c);
 
     println!("{} failures", c.fails);
     if c.fails == 0 { 0 } else { 1 }
@@ -406,4 +407,33 @@ fn ocr_check(c: &mut Check, dir: &Path) {
         }
         Err(e) => println!("INFO ocr unavailable: {e}"),
     }
+}
+
+/// История: запись проектов, список (новые первыми), лимит количества, очистка.
+/// Debug-сборка пишет в отдельную папку history/dev, настоящая история не трогается.
+fn history_check(c: &mut Check) {
+    use crate::history;
+    history::clear();
+    let mut img = tiny_skia::Pixmap::new(300, 200).unwrap();
+    img.fill(tiny_skia::Color::from_rgba8(40, 120, 220, 255));
+    let shot = crate::capture::MonitorShot { x: 0, y: 0, pixmap: img.clone() };
+    let mut s = Session::new(vec![shot], vec![1.0], 0.5, 0xE24B4A, 4.0, None);
+    s.on_left_press(0, 10.0, 10.0);
+    s.on_left_release(0, 11.0, 10.0);
+    for _ in 0..3 {
+        let (h, shot) = s.project_parts().unwrap();
+        let bytes = crate::project::build(h, &shot).unwrap();
+        c.ok("history save", history::save(&bytes, &img).is_ok());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let list = history::list();
+    c.ok("history lists 3", list.len() == 3);
+    c.ok("history newest first", list.windows(2).all(|w| w[0].modified >= w[1].modified));
+    c.ok("history thumbnail", list.iter().all(|e| e.thumb.exists()));
+    c.ok("history label has size", list[0].label.contains("300×200"));
+    c.ok("history entry opens", Session::from_project(&std::fs::read(&list[0].path).unwrap(), 0, 0, 1.0, 0.5, None).is_ok());
+    history::prune(2, 7);
+    c.ok("history prune to 2", history::list().len() == 2);
+    history::clear();
+    c.ok("history clear", history::list().is_empty());
 }

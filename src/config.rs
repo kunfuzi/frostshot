@@ -32,6 +32,10 @@ pub struct Config {
     pub notify: bool,
     /// Скрывать личные данные сразу после выделения (распознавание в фоне).
     pub auto_hide: bool,
+    /// Хранить последние снимки как проекты для повторной правки.
+    pub history: bool,
+    pub history_max: usize,
+    pub history_days: u32,
 }
 
 impl Default for Config {
@@ -54,6 +58,9 @@ impl Default for Config {
             dim: 0.5,
             notify: true,
             auto_hide: true,
+            history: true,
+            history_max: 10,
+            history_days: 7,
         }
     }
 }

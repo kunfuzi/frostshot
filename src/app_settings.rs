@@ -146,6 +146,12 @@ impl App {
                 st.refresh_shell();
             }
         }
+        if fx.history_clear {
+            crate::history::clear();
+        }
+        if fx.history || fx.history_clear {
+            self.refresh_history();
+        }
         if fx.default_apps {
             platform::open_default_apps();
         }

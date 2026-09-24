@@ -54,6 +54,13 @@ pub fn dto_to_op(d: &OpDto) -> Option<SelOp> {
     Some(SelOp { add: d.add, shape })
 }
 
+/// Проект из заголовка и снимка: PNG кодируется здесь (можно в фоновом потоке).
+pub fn build(mut header: Header, shot: &tiny_skia::Pixmap) -> Result<Vec<u8>, String> {
+    let png = shot.encode_png().map_err(|e| e.to_string())?;
+    header.png_len = png.len();
+    encode(&header, &png)
+}
+
 pub fn encode(header: &Header, png: &[u8]) -> Result<Vec<u8>, String> {
     let json = serde_json::to_vec(header).map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(MAGIC.len() + 4 + json.len() + png.len());
