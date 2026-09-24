@@ -38,13 +38,27 @@ struct Card {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Target {
     Card(usize),
+    Copy(usize),
+    Delete(usize),
     Folder,
     Clear,
+}
+
+impl Target {
+    /// Карточка, к которой относится цель (кнопки на ней держат подсветку карточки).
+    fn card(self) -> Option<usize> {
+        match self {
+            Target::Card(i) | Target::Copy(i) | Target::Delete(i) => Some(i),
+            _ => None,
+        }
+    }
 }
 
 pub enum PopupClick {
     None,
     Open(PathBuf),
+    Copy(PathBuf),
+    Delete(PathBuf),
     Folder,
     Clear,
 }
@@ -139,6 +153,21 @@ impl HistoryPopup {
         }
     }
 
+    /// Убрать карточку после удаления снимка и подогнать размер. false: карточек не осталось.
+    pub fn remove_card(&mut self, path: &std::path::Path) -> bool {
+        self.cards.retain(|c| c.path != path);
+        self.hover = None;
+        if self.cards.is_empty() {
+            return false;
+        }
+        let (cols, lw, lh) = logical_size(self.cards.len());
+        self.cols = cols;
+        let _ = self.window.request_inner_size(LogicalSize::new(lw, lh));
+        self.anchor();
+        self.window.request_redraw();
+        true
+    }
+
     /// Идёт анимация появления: нужна перерисовка каждый кадр.
     pub fn animating(&self) -> bool {
         self.opened.elapsed() < ANIM + Duration::from_millis(40 * self.cards.len() as u64)
@@ -157,6 +186,8 @@ impl HistoryPopup {
     pub fn on_click(&self) -> PopupClick {
         match self.hover {
             Some(Target::Card(i)) => self.cards.get(i).map_or(PopupClick::None, |c| PopupClick::Open(c.path.clone())),
+            Some(Target::Copy(i)) => self.cards.get(i).map_or(PopupClick::None, |c| PopupClick::Copy(c.path.clone())),
+            Some(Target::Delete(i)) => self.cards.get(i).map_or(PopupClick::None, |c| PopupClick::Delete(c.path.clone())),
             Some(Target::Folder) => PopupClick::Folder,
             Some(Target::Clear) => PopupClick::Clear,
             None => PopupClick::None,
@@ -234,7 +265,7 @@ fn draw_panel(pm: &mut Pixmap, cards: &[Card], cols: usize, hover: Option<Target
             let x = PAD * s + col as f32 * (cw + PAD * s);
             let y = HEADER_H * s + row as f32 * (ch + PAD * s) + dy;
             let Some(r) = Rect::from_xywh(x, y, cw, ch) else { continue };
-            let hovered = hover == Some(Target::Card(i));
+            let hovered = hover.and_then(Target::card) == Some(i);
             draw::fill_rounded(pm, r, 8.0 * s, if hovered { CARD_HOVER } else { CARD }, ease);
             if hovered {
                 if let Some(path) = draw::rounded_rect(r, 8.0 * s) {
@@ -255,6 +286,26 @@ fn draw_panel(pm: &mut Pixmap, cards: &[Card], cols: usize, hover: Option<Target
                 draw::draw_text(pm, font, &card.label, x + (cw - tw) / 2.0, y + ch - LABEL_H * s + 2.0 * s, ls, if hovered { FG } else { MUTED }, ease, None);
             }
             if k >= 1.0 {
+                // Кнопки на карточке под курсором: копировать и удалить. Их области идут
+                // раньше области карточки, чтобы клик по кнопке не открывал снимок.
+                if hovered {
+                    let bs = 30.0 * s;
+                    let by = y + 6.0 * s;
+                    let mut bx = x + cw - 6.0 * s - bs;
+                    for target in [Target::Delete(i), Target::Copy(i)] {
+                        let br = Rect::from_xywh(bx, by, bs, bs).unwrap();
+                        let over = hover == Some(target);
+                        let fill = match (target, over) {
+                            (Target::Delete(_), true) => [0xc0, 0x3a, 0x3a],
+                            (_, true) => ACCENT,
+                            _ => [0x14, 0x14, 0x17],
+                        };
+                        draw::fill_rounded(pm, br, bs / 2.0, fill, 0.92);
+                        card_icon(pm, target, br, s);
+                        rects.push((target, br));
+                        bx -= bs + 6.0 * s;
+                    }
+                }
                 rects.push((Target::Card(i), r));
             }
         }
@@ -262,14 +313,51 @@ fn draw_panel(pm: &mut Pixmap, cards: &[Card], cols: usize, hover: Option<Target
     }
 }
 
+/// Иконки кнопок карточки: две страницы (копировать) и корзина (удалить).
+fn card_icon(pm: &mut Pixmap, target: Target, r: Rect, s: f32) {
+    let (cx, cy) = (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0);
+    let w = 1.6 * s;
+    let white = [0xff, 0xff, 0xff];
+    let outline = |pm: &mut Pixmap, x: f32, y: f32, ww: f32, hh: f32| {
+        if let Some(rr) = Rect::from_xywh(x, y, ww, hh) {
+            draw::stroke_path(pm, &tiny_skia::PathBuilder::from_rect(rr), white, 1.0, w, None);
+        }
+    };
+    match target {
+        Target::Copy(_) => {
+            outline(pm, cx - 3.0 * s, cy - 7.0 * s, 9.0 * s, 11.0 * s);
+            if let Some(rr) = Rect::from_xywh(cx - 7.0 * s, cy - 4.0 * s, 9.0 * s, 11.0 * s) {
+                draw::fill_rect(pm, rr, [0x14, 0x14, 0x17], 1.0, None);
+            }
+            outline(pm, cx - 7.0 * s, cy - 4.0 * s, 9.0 * s, 11.0 * s);
+        }
+        Target::Delete(_) => {
+            draw::line(pm, cx - 7.0 * s, cy - 5.0 * s, cx + 7.0 * s, cy - 5.0 * s, white, 1.0, w, None);
+            draw::line(pm, cx - 2.5 * s, cy - 7.5 * s, cx + 2.5 * s, cy - 7.5 * s, white, 1.0, w, None);
+            let mut pb = tiny_skia::PathBuilder::new();
+            pb.move_to(cx - 5.5 * s, cy - 5.0 * s);
+            pb.line_to(cx - 4.5 * s, cy + 7.5 * s);
+            pb.line_to(cx + 4.5 * s, cy + 7.5 * s);
+            pb.line_to(cx + 5.5 * s, cy - 5.0 * s);
+            if let Some(p) = pb.finish() {
+                draw::stroke_path(pm, &p, white, 1.0, w, None);
+            }
+            draw::line(pm, cx - 1.5 * s, cy - 2.0 * s, cx - 1.5 * s, cy + 5.0 * s, white, 1.0, w * 0.8, None);
+            draw::line(pm, cx + 1.5 * s, cy - 2.0 * s, cx + 1.5 * s, cy + 5.0 * s, white, 1.0, w * 0.8, None);
+        }
+        _ => {}
+    }
+}
+
 /// Отрисовка панели без окна (для самопроверки): последние снимки, наведение на первый.
-pub fn render_preview(entries: &[crate::history::Entry], s: f32, t: f32, font: Option<&FontVec>) -> Option<Pixmap> {
+/// hover_copy: курсор на кнопке «Копировать» первой карточки.
+pub fn render_preview(entries: &[crate::history::Entry], s: f32, t: f32, font: Option<&FontVec>, hover_copy: bool) -> Option<Pixmap> {
     let cards: Vec<Card> = entries
         .iter()
         .map(|e| Card { path: e.path.clone(), label: e.label.clone(), thumb: std::fs::read(&e.thumb).ok().and_then(|b| Pixmap::decode_png(&b).ok()) })
         .collect();
     let (cols, lw, lh) = logical_size(cards.len());
     let mut pm = Pixmap::new((lw as f32 * s) as u32, (lh as f32 * s) as u32)?;
-    draw_panel(&mut pm, &cards, cols, Some(Target::Card(0)), t, s, font);
+    draw_panel(&mut pm, &cards, cols, Some(if hover_copy { Target::Copy(0) } else { Target::Card(0) }), t, s, font);
     Some(pm)
 }

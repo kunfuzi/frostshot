@@ -236,12 +236,16 @@ impl App {
         self.last_at = std::time::Instant::now();
         self.update_tray_last();
         let Some(title) = title else { return };
+        let (cx, cy) = rect.map(|(x, y, w, h)| (x + w as i32 / 2, y + h as i32 / 2)).unwrap_or((0, 0));
+        self.show_toast(el, title, thumb, (cx, cy));
+    }
+
+    /// Уведомление с миниатюрой на мониторе, где точка (cx, cy).
+    pub(crate) fn show_toast(&mut self, el: &ActiveEventLoop, title: String, thumb: &Pixmap, (cx, cy): (i32, i32)) {
         if !self.config.notify {
             return;
         }
-        let (cx, cy) = rect.map(|(x, y, w, h)| (x + w as i32 / 2, y + h as i32 / 2)).unwrap_or((0, 0));
-        let area = platform::work_area(cx, cy).or_else(|| rect.map(|(x, y, w, h)| (x, y, x + w as i32, y + h as i32 - 48)));
-        let Some(area) = area else { return };
+        let Some(area) = platform::work_area(cx, cy) else { return };
         let scale = el
             .available_monitors()
             .find(|m| {
@@ -253,6 +257,33 @@ impl App {
         match toast::Toast::open(el, self.font.clone(), thumb, title, "Нажмите, чтобы доработать".into(), area, scale) {
             Ok(t) => self.toast = Some(t),
             Err(e) => log::error!("toast: {e}"),
+        }
+    }
+
+    /// Кнопка «Копировать» в панели истории: готовый снимок из проекта в буфер.
+    pub(crate) fn copy_from_history(&mut self, el: &ActiveEventLoop, path: &std::path::Path) {
+        let res = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| Session::from_project(&b, 0, 0, 1.0, self.config.dim, self.font.clone()))
+            .and_then(|mut s| s.result().ok_or_else(|| "пустое выделение".to_string()));
+        let img = match res {
+            Ok(i) => i,
+            Err(e) => {
+                log::error!("history copy {}: {e}", path.display());
+                return;
+            }
+        };
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        match self.clipboard.as_mut().map(|cb| output::to_clipboard(cb, &img)) {
+            Some(Ok(())) => {
+                log::info!("history copied {}x{}", img.width(), img.height());
+                let at = platform::cursor_pos().unwrap_or((0, 0));
+                self.show_toast(el, "Скопировано в буфер".into(), &img, at);
+            }
+            Some(Err(e)) => log::error!("clipboard: {e}"),
+            None => log::error!("clipboard unavailable"),
         }
     }
 

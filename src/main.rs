@@ -236,6 +236,18 @@ impl App {
                     self.popup = None;
                     self.open_project(el, &path);
                 }
+                history_popup::PopupClick::Copy(path) => {
+                    self.popup = None;
+                    self.copy_from_history(el, &path);
+                }
+                history_popup::PopupClick::Delete(path) => {
+                    history::remove(&path);
+                    let left = self.popup.as_mut().is_some_and(|p| p.remove_card(&path));
+                    if !left {
+                        self.popup = None;
+                    }
+                    self.refresh_history();
+                }
                 history_popup::PopupClick::Folder => {
                     self.popup = None;
                     if let Some(d) = history::dir() {

@@ -441,11 +441,11 @@ fn history_check(c: &mut Check) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let font = draw::load_font();
-    if let Some(p) = crate::history_popup::render_preview(&history::list(), 1.25, 2.0, font.as_ref()) {
+    if let Some(p) = crate::history_popup::render_preview(&history::list(), 1.25, 2.0, font.as_ref(), true) {
         output::save_png(&p, &std::path::Path::new(&std::env::temp_dir()).join("frostshot_history_popup.png")).ok();
         c.ok("history popup renders", p.width() > 0);
     }
-    if let Some(p) = crate::history_popup::render_preview(&history::list(), 1.25, 0.12, font.as_ref()) {
+    if let Some(p) = crate::history_popup::render_preview(&history::list(), 1.25, 0.12, font.as_ref(), false) {
         output::save_png(&p, &std::path::Path::new(&std::env::temp_dir()).join("frostshot_history_popup_anim.png")).ok();
     }
     history::prune(2, 7);

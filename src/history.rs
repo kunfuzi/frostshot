@@ -65,7 +65,8 @@ pub fn list() -> Vec<Entry> {
     out
 }
 
-fn remove(path: &Path) {
+/// Удалить один снимок из истории (проект, миниатюру, подпись).
+pub fn remove(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("png"));
     let _ = std::fs::remove_file(path.with_extension("txt"));
