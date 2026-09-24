@@ -31,9 +31,12 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/frostshot.exe "dist/Frostshot-$v-windows-x64.exe"
           Compress-Archive -Path target/release/frostshot.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath "dist/Frostshot-$v-windows-x64.zip"
-          Get-ChildItem dist | Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
-            Out-File dist/SHA256SUMS.txt -Encoding ascii
+          # Сначала суммы всех файлов, потом запись: иначе файл сумм попадает в перебор.
+          $sums = Get-ChildItem dist -File | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          }
+          Set-Content -Path dist/SHA256SUMS.txt -Value $sums -Encoding ascii
+          Get-ChildItem dist
 
       - uses: softprops/action-gh-release@v2
         with:
