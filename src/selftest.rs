@@ -161,14 +161,14 @@ pub fn run(dir: &Path) -> i32 {
         s.on_left_press(0, x, y);
         s.on_left_release(0, x, y);
     }
-    // Счётчик с выноской (режим «сначала цель»): нажатие на цель, отпускание в стороне.
-    s.counter_label_first = false;
+    // Счётчик с выноской, Shift: нажатие на цель, отпускание в стороне.
+    s.mods = Mods { shift: true, ..Default::default() };
     drag(&mut s, 0, (150.0, 380.0), (260.0, 380.0));
-    s.counter_label_first = true;
+    s.mods = Mods::default();
     let img = s.result().unwrap();
     let q = px(&img, 105, 280);
     c.ok("counter callout wedge drawn", q[0] > 200 && q[1] < 90 && q[2] < 90);
-    // Режим «метка первой»: кружок в точке нажатия, клин к месту отпускания.
+    // Без Shift: кружок в точке нажатия, клин к месту отпускания.
     drag(&mut s, 0, (650.0, 580.0), (550.0, 580.0));
     let img = s.result().unwrap();
     let q = px(&img, 550, 480); // центр кружка (650,580) в координатах результата

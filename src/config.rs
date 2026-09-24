@@ -30,8 +30,6 @@ pub struct Config {
     pub dim: f32,
     /// Уведомление после копирования и сохранения.
     pub notify: bool,
-    /// Счётчик: true = нажатие ставит метку, тянем к цели; false = нажатие на цель, метка там, где отпустили.
-    pub counter_label_first: bool,
 }
 
 impl Default for Config {
@@ -53,7 +51,6 @@ impl Default for Config {
             file_template: DEFAULT_TEMPLATE.into(),
             dim: 0.5,
             notify: true,
-            counter_label_first: true,
         }
     }
 }

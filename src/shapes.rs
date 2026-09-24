@@ -53,7 +53,7 @@ impl Tool {
             Tool::Rect => "Прямоугольник (5, Shift: квадрат)",
             Tool::FilledRect => "Закрашенный прямоугольник (8)",
             Tool::Ellipse => "Эллипс (9, Shift: круг)",
-            Tool::Counter => "Счётчик 1, 2, 3 (0)",
+            Tool::Counter => "Счётчик (0): тяни от номера к цели, с Shift от цели",
             Tool::Text => "Текст (6)",
             Tool::Pixelate => "Пикселизация (7)",
         }
