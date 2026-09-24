@@ -87,6 +87,7 @@ impl App {
             return;
         }
         self.toast = None;
+        self.popup = None;
         let t0 = std::time::Instant::now();
         let shots = match capture::capture_all() {
             Ok(s) => s,

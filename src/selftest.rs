@@ -432,6 +432,22 @@ fn history_check(c: &mut Check) {
     c.ok("history thumbnail", list.iter().all(|e| e.thumb.exists()));
     c.ok("history label has size", list[0].label.contains("300×200"));
     c.ok("history entry opens", Session::from_project(&std::fs::read(&list[0].path).unwrap(), 0, 0, 1.0, 0.5, None).is_ok());
+    // Панель истории: полный кадр после анимации и середина анимации.
+    for (i, col) in [(0u8, [220u8, 80, 60]), (1, [60, 180, 90]), (2, [200, 160, 40])] {
+        let mut im = tiny_skia::Pixmap::new(480 + i as u32 * 120, 300).unwrap();
+        im.fill(tiny_skia::Color::from_rgba8(col[0], col[1], col[2], 255));
+        let (h, shot) = s.project_parts().unwrap();
+        let _ = history::save(&crate::project::build(h, &shot).unwrap(), &im);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let font = draw::load_font();
+    if let Some(p) = crate::history_popup::render_preview(&history::list(), 1.25, 2.0, font.as_ref()) {
+        output::save_png(&p, &std::path::Path::new(&std::env::temp_dir()).join("frostshot_history_popup.png")).ok();
+        c.ok("history popup renders", p.width() > 0);
+    }
+    if let Some(p) = crate::history_popup::render_preview(&history::list(), 1.25, 0.12, font.as_ref()) {
+        output::save_png(&p, &std::path::Path::new(&std::env::temp_dir()).join("frostshot_history_popup_anim.png")).ok();
+    }
     history::prune(2, 7);
     c.ok("history prune to 2", history::list().len() == 2);
     history::clear();

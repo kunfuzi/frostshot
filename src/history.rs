@@ -18,14 +18,13 @@ pub fn dir() -> Option<PathBuf> {
     Some(if cfg!(debug_assertions) { d.join("dev") } else { d })
 }
 
-/// Миниатюра для меню: картинка вписана в квадрат на прозрачном фоне.
-fn thumbnail(img: &Pixmap, size: u32) -> Option<Pixmap> {
-    let k = (size as f32 / img.width() as f32).min(size as f32 / img.height() as f32).min(1.0);
-    let mut t = Pixmap::new(size, size)?;
-    let (w, h) = (img.width() as f32 * k, img.height() as f32 * k);
+/// Миниатюра для панели истории: вписана в max x max без полей.
+fn thumbnail(img: &Pixmap, max: u32) -> Option<Pixmap> {
+    let k = (max as f32 / img.width() as f32).min(max as f32 / img.height() as f32).min(1.0);
+    let (w, h) = ((img.width() as f32 * k).round().max(1.0) as u32, (img.height() as f32 * k).round().max(1.0) as u32);
+    let mut t = Pixmap::new(w, h)?;
     let paint = PixmapPaint { quality: FilterQuality::Bicubic, ..PixmapPaint::default() };
-    let tr = Transform::from_row(k, 0.0, 0.0, k, (size as f32 - w) / 2.0, (size as f32 - h) / 2.0);
-    t.draw_pixmap(0, 0, img.as_ref(), &paint, tr, None);
+    t.draw_pixmap(0, 0, img.as_ref(), &paint, Transform::from_scale(k, k), None);
     Some(t)
 }
 
@@ -36,10 +35,10 @@ pub fn save(project: &[u8], result: &Pixmap) -> Result<PathBuf, String> {
     let name = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f").to_string();
     let path = dir.join(format!("{name}.{}", crate::project::EXT));
     std::fs::write(&path, project).map_err(|e| e.to_string())?;
-    if let Some(t) = thumbnail(result, 32) {
+    if let Some(t) = thumbnail(result, 400) {
         let _ = std::fs::write(path.with_extension("png"), t.encode_png().unwrap_or_default());
     }
-    // Размер результата в имени метки не храним: читаем из миниатюры не нужно, берём сейчас.
+    // Размер результата для подписи в панели истории.
     let _ = std::fs::write(path.with_extension("txt"), format!("{}×{}", result.width(), result.height()));
     Ok(path)
 }

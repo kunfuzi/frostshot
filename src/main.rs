@@ -6,6 +6,7 @@ mod capture;
 mod config;
 mod draw;
 mod history;
+mod history_popup;
 mod ocr;
 mod output;
 mod pin;
@@ -42,6 +43,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
+
+/// Задержка наведения на значок до появления панели истории и задержка скрытия.
+const POPUP_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
+const POPUP_HIDE: std::time::Duration = std::time::Duration::from_millis(450);
 
 /// Сколько хранить последний снимок для повторного открытия.
 const LAST_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
@@ -99,6 +104,12 @@ struct App {
     toast: Option<toast::Toast>,
     /// Снимки, закреплённые поверх окон.
     pins: Vec<pin::Pin>,
+    /// Панель истории у значка в трее и её таймеры.
+    popup: Option<history_popup::HistoryPopup>,
+    /// Где значок в трее (центр X, верх Y) и когда на него навели курсор.
+    tray_anchor: Option<(i32, i32)>,
+    tray_hover_since: Option<std::time::Instant>,
+    popup_hide_at: Option<std::time::Instant>,
     toast_pos: (f32, f32),
     pending_save: Option<Pending>,
     clipboard: Option<arboard::Clipboard>,
@@ -174,10 +185,71 @@ impl App {
     }
 
     fn refresh_history(&mut self) {
-        let entries = if self.config.history { history::list() } else { Vec::new() };
-        let on = self.config.history;
-        if let Some(t) = &mut self.tray {
-            t.set_history(&entries, on);
+        let on = self.config.history && !history::list().is_empty();
+        if let Some(t) = &self.tray {
+            t.set_history_enabled(on);
+        }
+    }
+
+    /// Панель истории над точкой anchor (центр значка или курсор).
+    fn show_history_popup(&mut self, el: &ActiveEventLoop, anchor: Option<(i32, i32)>) {
+        if self.popup.is_some() || self.overlay.is_some() || !self.config.history {
+            return;
+        }
+        let entries = history::list();
+        if entries.is_empty() {
+            return;
+        }
+        let (ax, ay) = anchor.unwrap_or((0, 0));
+        let Some(area) = platform::work_area(ax, ay) else { return };
+        let scale = el
+            .available_monitors()
+            .find(|m| {
+                let (p, s) = (m.position(), m.size());
+                ax >= p.x && ay >= p.y && ax < p.x + s.width as i32 && ay < p.y + s.height as i32
+            })
+            .map(|m| m.scale_factor() as f32)
+            .unwrap_or(1.0);
+        self.toast = None;
+        match history_popup::HistoryPopup::open(el, self.font.clone(), &entries, area, ax, scale) {
+            Ok(p) => self.popup = Some(p),
+            Err(e) => log::error!("history popup: {e}"),
+        }
+    }
+
+    fn handle_popup_event(&mut self, el: &ActiveEventLoop, event: WindowEvent) {
+        let Some(p) = &mut self.popup else { return };
+        match event {
+            WindowEvent::RedrawRequested => p.present(),
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                p.anchor();
+                p.window.request_redraw();
+            }
+            WindowEvent::CursorEntered { .. } => self.popup_hide_at = None,
+            WindowEvent::CursorLeft { .. } => self.popup_hide_at = Some(std::time::Instant::now() + POPUP_HIDE),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.popup_hide_at = None;
+                p.on_move(position.x as f32, position.y as f32);
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => match p.on_click() {
+                history_popup::PopupClick::Open(path) => {
+                    self.popup = None;
+                    self.open_project(el, &path);
+                }
+                history_popup::PopupClick::Folder => {
+                    self.popup = None;
+                    if let Some(d) = history::dir() {
+                        platform::open_folder(&d);
+                    }
+                }
+                history_popup::PopupClick::Clear => {
+                    self.popup = None;
+                    history::clear();
+                    self.refresh_history();
+                }
+                history_popup::PopupClick::None => {}
+            },
+            _ => {}
         }
     }
 
@@ -186,6 +258,8 @@ impl App {
             self.handle_settings_event(event);
         } else if self.toast.as_ref().is_some_and(|t| t.window.id() == id) {
             self.handle_toast_event(el, event);
+        } else if self.popup.as_ref().is_some_and(|p| p.window.id() == id) {
+            self.handle_popup_event(el, event);
         } else if let Some(i) = self.pins.iter().position(|p| p.window.id() == id) {
             match self.pins[i].on_event(event) {
                 pin::PinAction::Close => {
@@ -252,23 +326,28 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Tray(TrayIconEvent::Click { button: TrayButton::Left, button_state: MouseButtonState::Up, .. }) => {
                 app.start_capture(el);
             }
+            UserEvent::Tray(TrayIconEvent::Enter { rect, .. } | TrayIconEvent::Move { rect, .. }) => {
+                app.tray_anchor = Some(((rect.position.x + rect.size.width as f64 / 2.0) as i32, rect.position.y as i32));
+                if app.popup.is_some() {
+                    app.popup_hide_at = None;
+                } else if app.tray_hover_since.is_none() {
+                    app.tray_hover_since = Some(std::time::Instant::now());
+                }
+            }
+            UserEvent::Tray(TrayIconEvent::Leave { .. }) => {
+                app.tray_hover_since = None;
+                if app.popup.is_some() {
+                    app.popup_hide_at = Some(std::time::Instant::now() + POPUP_HIDE);
+                }
+            }
             UserEvent::Tray(_) => {}
             UserEvent::Menu(e) => {
                 let Some(t) = &app.tray else { return };
-                if let Some((_, path)) = t.history_items.iter().find(|(id, _)| *id == e.id) {
-                    let path = path.clone();
-                    app.open_project(el, &path);
-                    return;
-                }
-                if e.id == t.history_folder_id {
-                    if let Some(d) = history::dir() {
-                        platform::open_folder(&d);
-                    }
-                    return;
-                }
-                if e.id == t.history_clear_id {
-                    history::clear();
-                    app.refresh_history();
+                if e.id == t.history_id {
+                    // Из меню: у курсора (меню открывалось там), держим дольше, пока не наведут.
+                    let anchor = platform::cursor_pos().or(app.tray_anchor);
+                    app.show_history_popup(el, anchor);
+                    app.popup_hide_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
                     return;
                 }
                 if e.id == t.capture_id {
@@ -344,9 +423,27 @@ impl ApplicationHandler<UserEvent> for App {
             }
             hint_d = ov.session.width_hint_deadline();
         }
+        // Панель истории: открыть после задержки наведения, спрятать после ухода курсора.
+        if self.tray_hover_since.is_some_and(|t| now >= t + POPUP_DELAY) {
+            self.tray_hover_since = None;
+            let anchor = self.tray_anchor;
+            self.guarded(|app| app.show_history_popup(el, anchor));
+        }
+        if self.popup_hide_at.is_some_and(|t| now >= t) {
+            self.popup_hide_at = None;
+            self.popup = None;
+        }
+        let mut frame_d = None;
+        if let Some(p) = &self.popup {
+            if p.animating() {
+                p.window.request_redraw();
+                frame_d = Some(now + std::time::Duration::from_millis(16));
+            }
+        }
+        let hover_d = self.tray_hover_since.map(|t| t + POPUP_DELAY);
         let toast_d = self.toast.as_ref().and_then(|t| t.deadline());
         let last_d = self.last.as_ref().map(|_| self.last_at + LAST_TTL);
-        match toast_d.into_iter().chain(last_d).chain(hint_d).min() {
+        match toast_d.into_iter().chain(last_d).chain(hint_d).chain(frame_d).chain(hover_d).chain(self.popup_hide_at).min() {
             Some(d) => el.set_control_flow(ControlFlow::WaitUntil(d)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -450,6 +547,10 @@ fn main() {
         last_at: std::time::Instant::now(),
         toast: None,
         pins: Vec::new(),
+        popup: None,
+        tray_anchor: None,
+        tray_hover_since: None,
+        popup_hide_at: None,
         toast_pos: (0.0, 0.0),
         pending_save: None,
         clipboard: None,
