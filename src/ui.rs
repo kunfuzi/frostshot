@@ -71,7 +71,19 @@ impl Btn {
 pub struct Layout {
     pub panels: Vec<Rect>,
     pub buttons: Vec<(Btn, Rect)>,
+    /// Разделители групп инструментов.
+    pub seps: Vec<Rect>,
 }
+
+/// Инструменты по группам, по два в ряд, как в Photoshop: выбор и измерение,
+/// рисование, фигуры, текст и скрытие, история и цвет.
+const TOOL_GROUPS: &[&[Btn]] = &[
+    &[Btn::Tool(Tool::Pointer), Btn::Tool(Tool::SelectRect), Btn::Tool(Tool::SelectLasso), Btn::Tool(Tool::Ruler)],
+    &[Btn::Tool(Tool::Pencil), Btn::Tool(Tool::Marker), Btn::Tool(Tool::Line), Btn::Tool(Tool::Arrow)],
+    &[Btn::Tool(Tool::Rect), Btn::Tool(Tool::FilledRect), Btn::Tool(Tool::Ellipse), Btn::Tool(Tool::Counter)],
+    &[Btn::Tool(Tool::Text), Btn::Tool(Tool::Pixelate), Btn::AutoHide],
+    &[Btn::Undo, Btn::Redo, Btn::Color],
+];
 
 impl Layout {
     pub fn hit(&self, x: f32, y: f32) -> Option<Btn> {
@@ -94,18 +106,27 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     let b = (32.0 * s).round();
     let pad = (4.0 * s).round();
     let gap = (8.0 * s).round();
-    let mut out = Layout { panels: vec![], buttons: vec![] };
+    let mut out = Layout { panels: vec![], buttons: vec![], seps: vec![] };
 
-    // Вертикальная панель инструментов.
-    let mut vitems: Vec<Btn> = Tool::ALL.iter().map(|t| Btn::Tool(*t)).collect();
-    vitems.push(Btn::AutoHide);
-    vitems.push(Btn::Color);
-    vitems.push(Btn::Undo);
-    vitems.push(Btn::Redo);
-    // Не помещается по высоте: переносим во второй (третий) столбец.
-    let rows = (((mh - 2.0 * pad) / b).floor() as usize).clamp(1, vitems.len());
-    let cols = vitems.len().div_ceil(rows);
-    let (vw, vh) = (cols as f32 * b + 2.0 * pad, rows as f32 * b + 2.0 * pad);
+    // Панель инструментов: группы по два в ряд, между группами разделитель.
+    // Не помещается по высоте: следующие группы уходят в соседний столбец.
+    let sep = gap;
+    let mut place: Vec<(usize, f32)> = Vec::new(); // (столбец групп, отступ сверху)
+    let (mut gcol, mut y, mut max_h) = (0usize, 0.0f32, 0.0f32);
+    for g in TOOL_GROUPS {
+        let gh = g.len().div_ceil(2) as f32 * b;
+        if y > 0.0 && y + sep + gh > mh - 2.0 * pad {
+            (gcol, y) = (gcol + 1, 0.0);
+        }
+        if y > 0.0 {
+            y += sep;
+        }
+        place.push((gcol, y));
+        y += gh;
+        max_h = max_h.max(y);
+    }
+    let gcols = gcol + 1;
+    let (vw, vh) = (gcols as f32 * 2.0 * b + (gcols - 1) as f32 * gap + 2.0 * pad, max_h + 2.0 * pad);
     let mut vx = bbox.right() + gap;
     if vx + vw > mw {
         vx = bbox.left() - gap - vw;
@@ -116,9 +137,18 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     let vy = bbox.top().min(mh - vh).max(0.0);
     let vpanel = Rect::from_xywh(vx, vy, vw, vh).unwrap();
     out.panels.push(vpanel);
-    for (i, it) in vitems.iter().enumerate() {
-        let (c, r) = ((i / rows) as f32, (i % rows) as f32);
-        out.buttons.push((*it, Rect::from_xywh(vx + pad + c * b, vy + pad + r * b, b, b).unwrap()));
+    for (g, (gc, gy)) in TOOL_GROUPS.iter().zip(&place) {
+        let gx = vx + pad + *gc as f32 * (2.0 * b + gap);
+        let first = *gy == 0.0;
+        let gy = vy + pad + gy;
+        if !first {
+            let t = (gy - sep / 2.0 - 0.5 * s).round();
+            out.seps.push(Rect::from_xywh(gx + 4.0 * s, t, 2.0 * b - 8.0 * s, s.max(1.0)).unwrap());
+        }
+        for (i, it) in g.iter().enumerate() {
+            let (c, r) = ((i % 2) as f32, (i / 2) as f32);
+            out.buttons.push((*it, Rect::from_xywh(gx + c * b, gy + r * b, b, b).unwrap()));
+        }
     }
 
     // Горизонтальная панель действий.
@@ -184,6 +214,9 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
     let s = st.scale;
     for p in &l.panels {
         draw::fill_rounded(pm, *p, 6.0 * s, PANEL, 0.94);
+    }
+    for r in &l.seps {
+        draw::fill_rect(pm, *r, HOVER, 1.0, None);
     }
     for (btn, r) in &l.buttons {
         let active = matches!(btn, Btn::Tool(t) if *t == st.tool);

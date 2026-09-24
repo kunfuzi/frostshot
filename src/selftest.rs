@@ -387,6 +387,20 @@ pub fn run(dir: &Path) -> i32 {
     let frame = s.render(0).clone();
     output::save_png(&frame, &dir.join("frame_idle.png")).ok();
 
+    // Панель инструментов: каждый инструмент ровно один раз, кнопки не перекрываются.
+    let l = crate::ui::layout(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 1.0, false, false);
+    for t in crate::shapes::Tool::ALL {
+        let n = l.buttons.iter().filter(|(b, _)| *b == crate::ui::Btn::Tool(t)).count();
+        c.ok(&format!("toolbar has {t:?} once"), n == 1);
+    }
+    let overlap = l.buttons.iter().enumerate().any(|(i, (_, a))| {
+        l.buttons[i + 1..].iter().any(|(_, b)| a.left() < b.right() && b.left() < a.right() && a.top() < b.bottom() && b.top() < a.bottom())
+    });
+    c.ok("toolbar buttons do not overlap", !overlap);
+    // Низкий монитор: группы уходят в соседний столбец и помещаются по высоте.
+    let low = crate::ui::layout(tiny_skia::Rect::from_xywh(50.0, 50.0, 200.0, 100.0).unwrap(), 800.0, 300.0, 1.0, false, false);
+    c.ok("toolbar fits low monitor", low.panels[0].bottom() <= 300.0);
+
     ocr_check(&mut c, dir);
     history_check(&mut c);
     edit_check(&mut c, dir, draw::load_font().map(Arc::new));
