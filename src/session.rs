@@ -68,6 +68,8 @@ pub struct Session {
     pub mods: Mods,
     dim: f32,
     save_menu: bool,
+    /// Режим счётчика: метка в точке нажатия, выноска тянется к цели.
+    pub counter_label_first: bool,
 }
 
 fn dim_pixmap(src: &Pixmap, dim: f32) -> Pixmap {
@@ -142,6 +144,7 @@ impl Session {
             mods: Mods::default(),
             dim,
             save_menu: false,
+            counter_label_first: true,
         }
     }
 
@@ -468,7 +471,13 @@ impl Session {
                         }
                         Kind::Line(a, b) | Kind::Arrow(a, b) => *b = if shift { snap45(*a, p) } else { p },
                         Kind::Rect(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) => *b = if shift { square(*a, p) } else { p },
-                        Kind::Counter { at, tip: Some(t), .. } => *at = if shift { snap45(*t, p) } else { p },
+                        Kind::Counter { at, tip: Some(t), .. } => {
+                            if self.counter_label_first {
+                                *t = if shift { snap45(*at, p) } else { p };
+                            } else {
+                                *at = if shift { snap45(*t, p) } else { p };
+                            }
+                        }
                         Kind::Counter { .. } => {}
                         Kind::Pixelate(_, b) => *b = p,
                         Kind::Text { .. } => {}
@@ -513,7 +522,8 @@ impl Session {
                 Tool::Rect => Kind::Rect(p, p),
                 Tool::FilledRect => Kind::FilledRect(p, p),
                 Tool::Ellipse => Kind::Ellipse(p, p),
-                // Нажатие отмечает цель; кружок встанет там, где отпустят (выноска-клин).
+                // Выноска-клин: в режиме «метка первой» кружок в точке нажатия, клин тянется к цели;
+                // иначе нажатие отмечает цель, кружок встанет там, где отпустят.
                 Tool::Counter => Kind::Counter { at: p, n: self.next_counter(), tip: Some(p) },
                 Tool::Pixelate => Kind::Pixelate(p, p),
                 Tool::Text => {
@@ -598,7 +608,10 @@ impl Session {
                 if let Kind::Counter { at, tip: tip @ Some(_), .. } = &mut shape.kind {
                     let t = tip.unwrap();
                     if dist(*at, t) < shapes::counter_radius(shape.width) {
-                        *at = t;
+                        // В режиме «сначала цель» кружок встаёт в точку клика.
+                        if !self.counter_label_first {
+                            *at = t;
+                        }
                         *tip = None;
                     }
                 }

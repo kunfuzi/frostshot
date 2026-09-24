@@ -28,6 +28,7 @@ const WIDTH: f64 = 700.0;
 pub enum Ctl {
     Autostart,
     Notify,
+    CounterMode,
     SaveOnCopy,
     DirChange,
     DirOpen,
@@ -228,6 +229,10 @@ impl Settings {
             }
             Some(Ctl::Notify) => {
                 cfg.notify = !cfg.notify;
+                fx.save = true;
+            }
+            Some(Ctl::CounterMode) => {
+                cfg.counter_label_first = !cfg.counter_label_first;
                 fx.save = true;
             }
             Some(Ctl::SaveOnCopy) => {
@@ -439,6 +444,7 @@ impl Settings {
         for (ctl, on, label) in [
             (Ctl::Autostart, cfg.autostart, "Запускать при входе в систему"),
             (Ctl::Notify, cfg.notify, "Уведомление после снимка (клик: доработать)"),
+            (Ctl::CounterMode, cfg.counter_label_first, "Счётчик: ставлю номер и тяну выноску к цели"),
             (Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку"),
         ] {
             let bs = (f + 2.0) * s;

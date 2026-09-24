@@ -161,11 +161,20 @@ pub fn run(dir: &Path) -> i32 {
         s.on_left_press(0, x, y);
         s.on_left_release(0, x, y);
     }
-    // Счётчик с выноской: нажатие на цель, отпускание в стороне; клин закрашивает середину.
+    // Счётчик с выноской (режим «сначала цель»): нажатие на цель, отпускание в стороне.
+    s.counter_label_first = false;
     drag(&mut s, 0, (150.0, 380.0), (260.0, 380.0));
+    s.counter_label_first = true;
     let img = s.result().unwrap();
     let q = px(&img, 105, 280);
     c.ok("counter callout wedge drawn", q[0] > 200 && q[1] < 90 && q[2] < 90);
+    // Режим «метка первой»: кружок в точке нажатия, клин к месту отпускания.
+    drag(&mut s, 0, (650.0, 580.0), (550.0, 580.0));
+    let img = s.result().unwrap();
+    let q = px(&img, 550, 480); // центр кружка (650,580) в координатах результата
+    let t = px(&img, 500, 480); // середина клина (600,580)
+    c.ok("label-first counter at press point", q[0] > 200 && q[1] < 90);
+    c.ok("label-first wedge toward target", t[0] > 200 && t[1] < 90);
     let frame = s.render(0).clone();
     output::save_png(&frame, &dir.join("frame_new_tools.png")).ok();
     let with_all = s.result().unwrap();
@@ -177,12 +186,12 @@ pub fn run(dir: &Path) -> i32 {
     s.mods = Mods { ctrl: true, shift: true, ..Default::default() };
     s.on_key(Some(KeyCode::KeyZ), None, None); // повторять нечего
     s.mods = Mods { ctrl: true, ..Default::default() };
-    for _ in 0..6 {
+    for _ in 0..7 {
         s.on_key(Some(KeyCode::KeyZ), None, None);
     }
     let undone = s.result().unwrap();
     c.ok("undo all new shapes", undone.data() == base_img.data());
-    for _ in 0..6 {
+    for _ in 0..7 {
         s.on_key(Some(KeyCode::KeyY), None, None);
     }
     s.mods = Mods::default();
@@ -192,7 +201,7 @@ pub fn run(dir: &Path) -> i32 {
     c.ok("P pins selection", s.on_key(Some(KeyCode::KeyP), None, None) == Action::Pin);
     c.ok("selection origin known", s.selection_origin().is_some());
     s.mods = Mods { ctrl: true, ..Default::default() };
-    for _ in 0..6 {
+    for _ in 0..7 {
         s.on_key(Some(KeyCode::KeyZ), None, None);
     }
     s.mods = Mods::default();

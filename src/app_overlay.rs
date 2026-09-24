@@ -100,7 +100,8 @@ impl App {
         platform::dismiss_shell_flyout();
         let rects: Vec<_> = shots.iter().map(|s| (s.x, s.y, s.width(), s.height())).collect();
         let Some((wins, scales)) = self.create_windows(el, &rects) else { return };
-        let session = Session::new(shots, scales, self.config.dim, self.config.color, self.config.width, self.font.clone());
+        let mut session = Session::new(shots, scales, self.config.dim, self.config.color, self.config.width, self.font.clone());
+        session.counter_label_first = self.config.counter_label_first;
         self.show_overlay(session, wins, false);
         log::info!("overlay shown in {:?}", t0.elapsed());
     }
@@ -114,6 +115,7 @@ impl App {
         let Some(mut session) = self.last.take() else { return };
         self.toast = None;
         session.wake();
+        session.counter_label_first = self.config.counter_label_first;
         let rects = session.monitor_rects();
         match self.create_windows(el, &rects) {
             Some((wins, _)) => self.show_overlay(session, wins, true),
@@ -155,7 +157,8 @@ impl App {
             Ok((session, (p.x, p.y, s.width, s.height)))
         });
         match res {
-            Ok((session, rect)) => {
+            Ok((mut session, rect)) => {
+                session.counter_label_first = self.config.counter_label_first;
                 self.toast = None;
                 if let Some((wins, _)) = self.create_windows(el, &[rect]) {
                     self.show_overlay(session, wins, true);
