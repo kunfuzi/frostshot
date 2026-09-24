@@ -17,6 +17,7 @@ mod selftest;
 mod session;
 mod settings;
 mod shapes;
+mod svg;
 mod toast;
 mod tray;
 mod ui;
@@ -191,10 +192,9 @@ impl App {
             rfd::MessageDialog::new()
                 .set_title("Frostshot")
                 .set_description(format!(
-                    "Запущена программа, которая может перехватывать PrintScreen: {names}.
-
-                     Пока она работает, по PrintScreen может открываться она, а не Frostshot.                      Выключите в ней клавишу PrintScreen или уберите её из автозапуска.
-
+                    "Запущена программа, которая может перехватывать PrintScreen: {names}.\n\n\
+                     Пока она работает, по PrintScreen может открываться она, а не Frostshot. \
+                     Выключите в ней клавишу PrintScreen или уберите её из автозапуска.\n\n\
                      Frostshot также открывается по {fallback} и клику по иконке в трее."
                 ))
                 .set_level(rfd::MessageLevel::Info)

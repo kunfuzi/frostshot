@@ -19,6 +19,7 @@ pub enum Action {
     Save,
     QuickSave,
     SaveProject,
+    SaveSvg,
     Pin,
     /// Распознать текст выделения и скопировать его.
     CopyText,
@@ -450,6 +451,10 @@ impl Session {
             Btn::SaveProject => {
                 self.save_menu = false;
                 return Action::SaveProject;
+            }
+            Btn::SaveSvg => {
+                self.save_menu = false;
+                return Action::SaveSvg;
             }
             Btn::Close => return Action::Close,
         }
@@ -1193,6 +1198,16 @@ impl Session {
             }
         }
         &self.frame[mon]
+    }
+
+    /// SVG: снимок картинкой, фигуры векторами (см. svg.rs).
+    pub fn to_svg(&mut self) -> Result<String, String> {
+        self.commit_text();
+        let mon = self.active.ok_or("нет выделения")?;
+        let sel = self.sel.as_mut().ok_or("нет выделения")?;
+        sel.ensure();
+        let b = sel.bbox().ok_or("пустое выделение")?;
+        crate::svg::build(&self.shots[mon].pixmap, sel.mask(), b, &self.shapes, self.font.as_deref())
     }
 
     /// Итоговое изображение: габарит выделения, вне маски прозрачно.

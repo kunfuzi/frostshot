@@ -178,6 +178,37 @@ pub fn run(dir: &Path) -> i32 {
     let frame = s.render(0).clone();
     output::save_png(&frame, &dir.join("frame_new_tools.png")).ok();
     let with_all = s.result().unwrap();
+
+    // SVG: все фигуры векторами, фигурное выделение маской. Добавим текст и линейку.
+    s.on_key(Some(KeyCode::Digit6), None, None);
+    s.on_left_press(0, 420.0, 230.0);
+    s.on_left_release(0, 420.0, 230.0);
+    s.on_key(Some(KeyCode::KeyA), None, Some("Ab <&> 12"));
+    s.on_key(None, Some(NamedKey::Escape), None);
+    s.on_key(Some(KeyCode::KeyR), None, None);
+    drag(&mut s, 0, (560.0, 380.0), (680.0, 540.0));
+    let svg_ref = s.result().unwrap();
+    match s.to_svg() {
+        Ok(svg) => {
+            std::fs::write(dir.join("export.svg"), &svg).ok();
+            output::save_png(&svg_ref, &dir.join("export_reference.png")).ok();
+            let size = format!(r#"width="{}" height="{}""#, svg_ref.width(), svg_ref.height());
+            c.ok("svg size equals png result", svg.contains(&size));
+            c.ok("svg uses selection mask", svg.contains(r#"mask="url(#selection)""#));
+            c.ok("svg text escaped", svg.contains("Ab &lt;&amp;&gt; 12"));
+            c.ok("svg ruler label", svg.contains(" px ("));
+            for tag in ["<polyline", "<line", "<rect", "<ellipse", "<circle", "<polygon", "<text", "<image"] {
+                c.ok(&format!("svg has {tag}"), svg.contains(tag));
+            }
+        }
+        Err(e) => c.ok(&format!("svg export: {e}"), false),
+    }
+    // Убрать текст и линейку: дальше проверки ждут прежний набор фигур.
+    s.mods = Mods { ctrl: true, ..Default::default() };
+    s.on_key(Some(KeyCode::KeyZ), None, None);
+    s.on_key(Some(KeyCode::KeyZ), None, None);
+    s.mods = Mods::default();
+    c.ok("svg extras undone", s.result().unwrap().data() == with_all.data());
     s.mods = Mods { ctrl: true, ..Default::default() };
     s.on_key(Some(KeyCode::KeyZ), None, None); // убрать счётчик 3
     s.mods = Mods::default();

@@ -43,6 +43,7 @@ pub enum Btn {
     Swatch(usize),
     SavePng,
     SaveProject,
+    SaveSvg,
 }
 
 impl Btn {
@@ -61,7 +62,7 @@ impl Btn {
             Btn::Copy => "Копировать (Ctrl+C, Enter)",
             Btn::Save => "Сохранить…",
             Btn::Close => "Закрыть (Esc)",
-            Btn::Swatch(_) | Btn::SavePng | Btn::SaveProject => "",
+            Btn::Swatch(_) | Btn::SavePng | Btn::SaveProject | Btn::SaveSvg => "",
         };
         s.to_string()
     }
@@ -144,7 +145,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     // Меню сохранения над (или под) панелью действий.
     if save_menu {
         let mh_item = b;
-        let items = [Btn::SavePng, Btn::SaveProject];
+        let items = [Btn::SavePng, Btn::SaveSvg, Btn::SaveProject];
         let mw_ = (300.0 * s * ui_font() / 18.0).round();
         let mhh = items.len() as f32 * mh_item + 2.0 * pad;
         let save_r = out.buttons.iter().find(|(b, _)| *b == Btn::Save).unwrap().1;
@@ -200,8 +201,12 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
             _ => FG,
         };
         match (btn, st.font) {
-            (Btn::SavePng | Btn::SaveProject, Some(font)) => {
-                let (label, hint) = if *btn == Btn::SavePng { ("PNG…", "Ctrl+S") } else { ("Проект .frost…", "для доработки") };
+            (Btn::SavePng | Btn::SaveProject | Btn::SaveSvg, Some(font)) => {
+                let (label, hint) = match btn {
+                    Btn::SavePng => ("PNG…", "Ctrl+S"),
+                    Btn::SaveSvg => ("SVG…", "для редактора"),
+                    _ => ("Проект .frost…", "для доработки"),
+                };
                 let size = ui_font() * s;
                 let ty = r.top() + (r.height() - draw::line_height(font, size)) / 2.0;
                 draw::draw_text(pm, font, label, r.left() + 10.0 * s, ty, size, FG, 1.0, None);
@@ -433,7 +438,7 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
             ln(pm, (10.0, 10.0), (22.0, 22.0), w, 1.0);
             ln(pm, (22.0, 10.0), (10.0, 22.0), w, 1.0);
         }
-        Btn::SavePng | Btn::SaveProject => {}
+        Btn::SavePng | Btn::SaveProject | Btn::SaveSvg => {}
     }
 }
 

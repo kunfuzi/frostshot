@@ -7,6 +7,8 @@ pub(crate) enum Pending {
     Png(Pixmap),
     /// Байты проекта и миниатюра для уведомления.
     Project(Vec<u8>, Pixmap),
+    /// Текст SVG и миниатюра для уведомления.
+    Svg(String, Pixmap),
 }
 
 impl App {
@@ -409,6 +411,24 @@ impl App {
                     ("Проект Frostshot", project::EXT),
                 );
             }
+            Action::SaveSvg => {
+                let Some(ov) = self.overlay.as_mut() else { return };
+                let (svg, thumb) = match (ov.session.to_svg(), ov.session.result()) {
+                    (Ok(s), Some(t)) => (s, t),
+                    (Err(e), _) => {
+                        log::error!("svg: {e}");
+                        return;
+                    }
+                    _ => return,
+                };
+                self.hide_overlay();
+                self.pending_save = Some(Pending::Svg(svg, thumb));
+                let name = std::path::Path::new(&output::default_file_name(&self.config.file_template))
+                    .with_extension("svg")
+                    .to_string_lossy()
+                    .to_string();
+                self.save_dialog("Сохранить SVG (фигуры можно править в редакторе)", name, ("SVG", "svg"));
+            }
         }
     }
 
@@ -515,6 +535,14 @@ impl App {
                 }
                 let r = std::fs::write(&p, bytes).map(|_| p).map_err(|e| e.to_string());
                 (r, thumb, "Проект сохранён")
+            }
+            Pending::Svg(svg, thumb) => {
+                let mut p = path.clone();
+                if p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("svg")) {
+                    p.set_extension("svg");
+                }
+                let r = std::fs::write(&p, svg).map(|_| p).map_err(|e| e.to_string());
+                (r, thumb, "Сохранено")
             }
         };
         match res {
