@@ -106,7 +106,12 @@ pub struct Session {
     save_menu: bool,
     /// Счётчик тянут от цели к номеру (нажали с Shift); иначе от номера к цели.
     counter_target_first: bool,
+    /// Когда крутили колесо толщины: плашка с образцом видна WIDTH_HINT.
+    width_hint_at: Option<std::time::Instant>,
 }
+
+/// Сколько показывать образец толщины после прокрутки колеса.
+pub const WIDTH_HINT: std::time::Duration = std::time::Duration::from_millis(1200);
 
 fn dim_pixmap(src: &Pixmap, dim: f32) -> Pixmap {
     let keep = ((1.0 - dim.clamp(0.0, 0.9)) * 256.0) as u32;
@@ -184,6 +189,7 @@ impl Session {
             dim,
             save_menu: false,
             counter_target_first: false,
+            width_hint_at: None,
         }
     }
 
@@ -771,8 +777,23 @@ impl Session {
         self.mark(mon);
     }
 
+    /// Когда спрятать образец толщины (для таймера цикла событий).
+    pub fn width_hint_deadline(&self) -> Option<std::time::Instant> {
+        self.width_hint_at.map(|t| t + WIDTH_HINT)
+    }
+
+    /// Время образца вышло: убрать его с экрана.
+    pub fn expire_width_hint(&mut self) {
+        if self.width_hint_at.take().is_some() {
+            if let Some((m, _)) = self.cursor {
+                self.mark(m);
+            }
+        }
+    }
+
     pub fn on_wheel(&mut self, lines: f32) {
         self.width = (self.width + lines.signum()).clamp(1.0, 40.0);
+        self.width_hint_at = Some(std::time::Instant::now());
         if let Some((m, _)) = self.cursor {
             self.mark(m);
         }
@@ -1042,6 +1063,13 @@ impl Session {
                     scale: s,
                 };
                 ui::draw_layout(frame, l, &st);
+            }
+        }
+
+        // Образец толщины у курсора после прокрутки колеса.
+        if let (Some((x, y)), Some(t0), Some(f)) = (cursor, self.width_hint_at, font) {
+            if t0.elapsed() < WIDTH_HINT {
+                ui::width_hint(frame, f, self.tool, self.width, draw::rgb(self.color), view.z, x, y, s);
             }
         }
 

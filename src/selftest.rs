@@ -286,6 +286,35 @@ pub fn run(dir: &Path) -> i32 {
     // Меню сохранения: кнопка открывает меню, пункт даёт действие.
     s.on_key(Some(KeyCode::KeyV), None, None);
 
+    // Образец толщины после прокрутки колеса (для разных инструментов).
+    let mut tiles: Vec<tiny_skia::Pixmap> = Vec::new();
+    s.on_key(Some(KeyCode::KeyV), None, None);
+    s.on_right_press();
+    drag(&mut s, 0, (100.0, 100.0), (700.0, 500.0));
+    for key in [KeyCode::Digit4, KeyCode::Digit2, KeyCode::Digit6, KeyCode::Digit0] {
+        s.on_key(Some(key), None, None);
+        s.on_move(0, 250.0, 330.0);
+        s.on_wheel(1.0);
+        s.on_wheel(1.0);
+        let f = s.render(0).clone();
+        if let Some(t) = f.clone_rect(tiny_skia::IntRect::from_xywh(240, 130, 220, 210).unwrap()) {
+            tiles.push(t);
+        }
+    }
+    c.ok("width hint scheduled", s.width_hint_deadline().is_some());
+    s.expire_width_hint();
+    c.ok("width hint expires", s.width_hint_deadline().is_none());
+    if let Some(mut sheet) = tiny_skia::Pixmap::new(220 * tiles.len() as u32, 210) {
+        for (i, t) in tiles.iter().enumerate() {
+            sheet.draw_pixmap(220 * i as i32, 0, t.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+        }
+        output::save_png(&sheet, &dir.join("width_hints.png")).ok();
+    }
+    for _ in 0..8 {
+        s.on_wheel(-1.0);
+    }
+    s.expire_width_hint();
+
     // Масштаб: Ctrl + колесо приближает к курсору, выделение в увеличенном виде точное.
     s.on_key(Some(KeyCode::KeyV), None, None);
     s.on_right_press();

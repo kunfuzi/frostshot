@@ -289,9 +289,22 @@ impl ApplicationHandler<UserEvent> for App {
             }
             log::info!("last shot released after {} min", LAST_TTL.as_secs() / 60);
         }
+        // Образец толщины в оверлее прячется по таймеру.
+        let mut hint_d = None;
+        if let Some(ov) = &mut self.overlay {
+            if ov.session.width_hint_deadline().is_some_and(|d| now >= d) {
+                ov.session.expire_width_hint();
+                for w in &ov.wins {
+                    if ov.session.dirty[w.mon] {
+                        w.window.request_redraw();
+                    }
+                }
+            }
+            hint_d = ov.session.width_hint_deadline();
+        }
         let toast_d = self.toast.as_ref().and_then(|t| t.deadline());
         let last_d = self.last.as_ref().map(|_| self.last_at + LAST_TTL);
-        match toast_d.into_iter().chain(last_d).min() {
+        match toast_d.into_iter().chain(last_d).chain(hint_d).min() {
             Some(d) => el.set_control_flow(ControlFlow::WaitUntil(d)),
             None => el.set_control_flow(ControlFlow::Wait),
         }

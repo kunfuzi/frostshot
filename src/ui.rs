@@ -44,10 +44,12 @@ pub enum Btn {
 }
 
 impl Btn {
-    pub fn tooltip(self) -> &'static str {
-        match self {
+    pub fn tooltip(self) -> String {
+        let s = match self {
+            // Колесо мыши меняет толщину: говорим об этом там, где его ищут.
+            Btn::Tool(t) if !t.is_selection() => return format!("{}  ·  колесо: толщина", t.label()),
             Btn::Tool(t) => t.label(),
-            Btn::Color => "Цвет",
+            Btn::Color => "Цвет  ·  колесо мыши: толщина",
             Btn::Undo => "Отменить (Ctrl+Z)",
             Btn::Redo => "Повторить (Ctrl+Shift+Z)",
             Btn::Pin => "Закрепить поверх окон (P)",
@@ -56,7 +58,8 @@ impl Btn {
             Btn::Save => "Сохранить…",
             Btn::Close => "Закрыть (Esc)",
             Btn::Swatch(_) | Btn::SavePng | Btn::SaveProject => "",
-        }
+        };
+        s.to_string()
     }
 }
 
@@ -209,7 +212,7 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
         let tip = h.tooltip();
         if !tip.is_empty() {
             if let Some((_, r)) = l.buttons.iter().find(|(b, _)| *b == h) {
-                tooltip(pm, font, tip, *r, s);
+                tooltip(pm, font, &tip, *r, s);
             }
         }
     }
@@ -480,4 +483,68 @@ pub fn label(pm: &mut Pixmap, font: &FontVec, text: &str, x: f32, y: f32, s: f32
 pub fn label_size(font: &FontVec, text: &str, s: f32) -> (f32, f32) {
     let (tw, th) = draw::text_size(font, text, ui_font() * s);
     (tw + 12.0 * s, th + 6.0 * s)
+}
+
+/// Плашка у курсора после прокрутки колеса: образец линии текущего цвета и толщины
+/// (как она выглядит на экране при текущем масштабе) и подпись со значением.
+#[allow(clippy::too_many_arguments)]
+pub fn width_hint(pm: &mut Pixmap, font: &FontVec, tool: Tool, width: f32, c: Rgb, zoom: f32, cx: f32, cy: f32, s: f32) {
+    let size = ui_font() * s;
+    let (label, sample_h) = match tool {
+        Tool::Text => (format!("Размер текста {}", crate::shapes::font_size(width).round()), crate::shapes::font_size(width) * zoom),
+        Tool::Counter => (format!("Размер номера {}", width.round()), crate::shapes::counter_radius(width) * 2.0 * zoom),
+        Tool::Marker => (format!("Толщина {}", width.round()), crate::shapes::marker_width(width) * zoom),
+        Tool::Pixelate => (format!("Блок {} px", (8.0 + width * 2.0).round()), 24.0 * s),
+        _ => (format!("Толщина {}", width.round()), width * zoom),
+    };
+    let sample_h = sample_h.clamp(2.0, 120.0 * s);
+    let sample_w = (96.0 * s).max(sample_h * 1.6);
+    let pad = 10.0 * s;
+    let (tw, th) = draw::text_size(font, &label, size);
+    let (hs, hint) = ((ui_font() - 3.0) * s, "колесо мыши");
+    let (hw, hh) = draw::text_size(font, hint, hs);
+    let w = sample_w.max(tw).max(hw) + 2.0 * pad;
+    let h = pad + sample_h + pad * 0.6 + th + hh + pad;
+    let (mw, mh) = (pm.width() as f32, pm.height() as f32);
+    // Справа вверху от курсора: справа внизу стоит лупа.
+    let mut x = cx + 24.0 * s;
+    let mut y = cy - 24.0 * s - h;
+    if x + w > mw {
+        x = cx - 24.0 * s - w;
+    }
+    if y < 0.0 {
+        y = cy + 24.0 * s;
+        if y + h > mh {
+            y = mh - h;
+        }
+    }
+    let (x, y) = (x.max(0.0), y.max(0.0));
+    if let Some(r) = Rect::from_xywh(x, y, w, h) {
+        draw::fill_rounded(pm, r, 6.0 * s, PANEL, 0.94);
+    }
+    let (sx, sy) = (x + (w - sample_w) / 2.0, y + pad + sample_h / 2.0);
+    match tool {
+        Tool::Text => {
+            let fs = sample_h.max(8.0);
+            let aw = draw::text_size(font, "Aa", fs).0;
+            draw::draw_text(pm, font, "Aa", x + (w - aw) / 2.0, sy - draw::ascent(font, fs) * 0.8, fs, c, 1.0, None);
+        }
+        Tool::Counter => draw::circle(pm, x + w / 2.0, sy, sample_h / 2.0, c, 1.0, true, 0.0),
+        Tool::Pixelate => {
+            let b = sample_h / 2.0;
+            for i in 0..((sample_w / b) as i32) {
+                for j in 0..2 {
+                    let a = if (i + j) % 2 == 0 { 0.9 } else { 0.45 };
+                    if let Some(r) = Rect::from_xywh(sx + i as f32 * b, y + pad + j as f32 * b, b, b) {
+                        draw::fill_rect(pm, r, FG, a, None);
+                    }
+                }
+            }
+        }
+        Tool::Marker => draw::line(pm, sx + sample_h / 2.0, sy, sx + sample_w - sample_h / 2.0, sy, c, 0.4, sample_h, None),
+        _ => draw::line(pm, sx + sample_h / 2.0, sy, sx + sample_w - sample_h / 2.0, sy, c, 1.0, sample_h, None),
+    }
+    let ty = y + pad + sample_h + pad * 0.6;
+    draw::draw_text(pm, font, &label, x + (w - tw) / 2.0, ty, size, WHITE, 1.0, None);
+    draw::draw_text(pm, font, hint, x + (w - hw) / 2.0, ty + th, hs, MUTED, 1.0, None);
 }
