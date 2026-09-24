@@ -742,6 +742,38 @@ impl Session {
         self.commit_text();
 
         let on_active = self.active == Some(mon) && self.has_selection();
+        // Курсор (V): только готовые фигуры, выделение не трогает.
+        if on_active && self.tool == Tool::Pointer {
+            // Выбранная фигура: ручки важнее рамки выделения.
+            if let Some(h) = self.picked_handle(mon, p) {
+                self.drag = Drag::ShapeHandle { handle: h, snapped: false };
+                return Action::None;
+            }
+            // Клик по фигуре выбирает её; повторный клик по тексту открывает правку.
+            if let Some(k) = self.shape_at(mon, p) {
+                let now = std::time::Instant::now();
+                // Повторный клик: та же фигура всё ещё выбрана с прошлого клика (Esc,
+                // Delete, отмена снимают выбор, и старый клик уже не считается).
+                let again = self.picked == Some(k)
+                    && self.last_pick.is_some_and(|(t, j)| j == k && now.duration_since(t) < std::time::Duration::from_millis(500));
+                self.last_pick = Some((now, k));
+                if again && matches!(self.shapes[k].kind, Kind::Text { .. }) {
+                    self.last_pick = None;
+                    self.reedit_text(k);
+                    return Action::None;
+                }
+                self.picked = Some(k);
+                self.series = None;
+                self.drag = Drag::ShapeMove { last: p, snapped: false };
+                self.mark_sel();
+                return Action::None;
+            }
+            if self.picked.take().is_some() {
+                self.mark_sel();
+            }
+            return Action::None;
+        }
+
         if on_active && !self.tool.is_selection() {
             let (c, w) = (draw::rgb(self.color), self.width);
             let kind = match self.tool {
@@ -766,7 +798,7 @@ impl Session {
                     self.mark_sel();
                     return Action::None;
                 }
-                Tool::SelectRect | Tool::SelectLasso => unreachable!(),
+                Tool::SelectRect | Tool::SelectLasso | Tool::Pointer => unreachable!(),
             };
             self.drag = Drag::Draw(Shape { kind, color: c, width: w });
             self.mark_sel();
@@ -779,11 +811,6 @@ impl Session {
                 self.drag = Drag::NewSel { add: !self.mods.alt, fresh: false, lasso, start: p, pts: vec![p] };
                 return Action::None;
             }
-            // Выбранная фигура: ручки важнее рамки выделения.
-            if let Some(h) = self.picked_handle(mon, p) {
-                self.drag = Drag::ShapeHandle { handle: h, snapped: false };
-                return Action::None;
-            }
             let sel = self.sel.as_ref().unwrap();
             let grab = 8.0 * self.scales[mon] / self.views[mon].z;
             if let Some(r) = sel.single_rect() {
@@ -792,29 +819,6 @@ impl Session {
                     return Action::None;
                 }
             }
-            // Клик по фигуре выбирает её; повторный клик по тексту открывает правку.
-            if let Some(k) = self.shape_at(mon, p) {
-                let now = std::time::Instant::now();
-                // Повторный клик: та же фигура всё ещё выбрана с прошлого клика (Esc,
-                // Delete, отмена снимают выбор, и старый клик уже не считается).
-                let again = self.picked == Some(k)
-                    && self.last_pick.is_some_and(|(t, j)| j == k && now.duration_since(t) < std::time::Duration::from_millis(500));
-                self.last_pick = Some((now, k));
-                if again && matches!(self.shapes[k].kind, Kind::Text { .. }) {
-                    self.last_pick = None;
-                    self.reedit_text(k);
-                    return Action::None;
-                }
-                self.picked = Some(k);
-                self.series = None;
-                self.drag = Drag::ShapeMove { last: p, snapped: false };
-                self.mark_sel();
-                return Action::None;
-            }
-            if self.picked.take().is_some() {
-                self.mark_sel();
-            }
-            let sel = self.sel.as_ref().unwrap();
             // Выделение на весь монитор двигать некуда: протягивание начинает новое.
             let (w, h) = self.shot_size(mon);
             let whole = sel.bbox().is_some_and(|b| b.w == w && b.h == h);
@@ -1180,7 +1184,8 @@ impl Session {
             return Action::AutoHide;
         }
         let tool = match code {
-            KeyCode::KeyV => Some(Tool::SelectRect),
+            KeyCode::KeyV => Some(Tool::Pointer),
+            KeyCode::KeyM => Some(Tool::SelectRect),
             KeyCode::KeyL => Some(Tool::SelectLasso),
             KeyCode::Digit1 => Some(Tool::Pencil),
             KeyCode::Digit2 => Some(Tool::Marker),
@@ -1229,6 +1234,16 @@ impl Session {
         }
         match self.tool {
             Tool::Text => CursorIcon::Text,
+            Tool::Pointer => {
+                let (ix, iy) = self.views[mon].to_img(x, y);
+                if self.picked_handle(mon, (ix, iy)).is_some() {
+                    CursorIcon::Crosshair
+                } else if self.shape_at(mon, (ix, iy)).is_some() {
+                    CursorIcon::Move
+                } else {
+                    CursorIcon::Default
+                }
+            }
             t if !t.is_selection() => CursorIcon::Crosshair,
             _ => {
                 let sel = self.sel.as_ref().unwrap();
@@ -1237,17 +1252,11 @@ impl Session {
                 }
                 let v = self.views[mon];
                 let (ix, iy) = v.to_img(x, y);
-                if self.picked_handle(mon, (ix, iy)).is_some() {
-                    return CursorIcon::Crosshair;
-                }
                 if let Some(r) = sel.single_rect() {
                     let grab = 8.0 * self.scales[mon] / v.z;
                     if let Some(h) = handles(r).iter().position(|hp| dist(*hp, (ix, iy)) <= grab) {
                         return handle_cursor(h);
                     }
-                }
-                if self.shape_at(mon, (ix, iy)).is_some() {
-                    return CursorIcon::Pointer;
                 }
                 if sel.contains(ix, iy) { CursorIcon::Move } else { CursorIcon::Crosshair }
             }
@@ -1355,7 +1364,7 @@ impl Session {
             }
 
             // Выбранная фигура: пунктирная рамка и ручки.
-            if let (Some(sh), true) = (self.picked.and_then(|k| self.shapes.get(k)), self.tool.is_selection()) {
+            if let (Some(sh), true) = (self.picked.and_then(|k| self.shapes.get(k)), self.tool == Tool::Pointer) {
                 let (l, t, r, b) = sh.bounds(font);
                 let (x0, y0) = view.to_scr(l, t);
                 let (x1, y1) = view.to_scr(r, b);
@@ -1388,7 +1397,7 @@ impl Session {
             if let Some(l) = &layout {
                 let over_ui = cursor.is_some_and(|(x, y)| l.over_panel(x, y));
                 if let (Some((x, y)), false) = (cursor, over_ui) {
-                    if !self.tool.is_selection() && self.tool != Tool::Text && matches!(self.drag, Drag::None) {
+                    if !self.tool.is_selection() && !matches!(self.tool, Tool::Text | Tool::Pointer) && matches!(self.drag, Drag::None) {
                         let r = match self.tool {
                             Tool::Marker => shapes::marker_width(self.width) / 2.0,
                             Tool::Counter => shapes::counter_radius(self.width),
@@ -1414,9 +1423,9 @@ impl Session {
         if let (Some((x, y)), Some(t0), Some(f)) = (cursor, self.width_hint_at, font) {
             if t0.elapsed() < WIDTH_HINT {
                 // Образец выбранной фигуры или кисти.
-                let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|_| self.tool.is_selection());
-                let (w, c) = picked.map_or((self.width, draw::rgb(self.color)), |sh| (sh.width, sh.color));
-                ui::width_hint(frame, f, self.tool, w, c, view.z, x, y, s);
+                let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|_| self.tool == Tool::Pointer);
+                let (t, w, c) = picked.map_or((self.tool, self.width, draw::rgb(self.color)), |sh| (Tool::of(&sh.kind), sh.width, sh.color));
+                ui::width_hint(frame, f, t, w, c, view.z, x, y, s);
             }
         }
 
@@ -1439,7 +1448,7 @@ impl Session {
                 ui::label(frame, f, &text, ((frame.width() as f32 - w) / 2.0).max(0.0), bottom - h, s);
                 bottom -= h + 8.0 * s;
             }
-            let picked_hint = (self.picked.is_some() && self.tool.is_selection())
+            let picked_hint = (self.picked.is_some() && self.tool == Tool::Pointer)
                 .then_some("Тяните фигуру или ручки  ·  стрелки: сдвиг  ·  колесо: толщина  ·  Delete: удалить  ·  Esc: снять выбор");
             let bottom_text = self.status.as_ref().map(|(t, _)| t.as_str()).or(picked_hint);
             if let (Some(text), true) = (bottom_text, is_active) {

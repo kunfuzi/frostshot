@@ -246,7 +246,7 @@ pub fn run(dir: &Path) -> i32 {
     s.mods = Mods::default();
 
     // 5. Перемещение выделения (рамка).
-    s.on_key(Some(KeyCode::KeyV), None, None);
+    s.on_key(Some(KeyCode::KeyM), None, None);
     s.on_right_press();
     drag(&mut s, 0, (100.0, 100.0), (500.0, 400.0));
     drag(&mut s, 0, (300.0, 250.0), (350.0, 270.0));
@@ -315,11 +315,11 @@ pub fn run(dir: &Path) -> i32 {
     s.render(last);
 
     // Меню сохранения: кнопка открывает меню, пункт даёт действие.
-    s.on_key(Some(KeyCode::KeyV), None, None);
+    s.on_key(Some(KeyCode::KeyM), None, None);
 
     // Образец толщины после прокрутки колеса (для разных инструментов).
     let mut tiles: Vec<tiny_skia::Pixmap> = Vec::new();
-    s.on_key(Some(KeyCode::KeyV), None, None);
+    s.on_key(Some(KeyCode::KeyM), None, None);
     s.on_right_press();
     drag(&mut s, 0, (100.0, 100.0), (700.0, 500.0));
     for key in [KeyCode::Digit4, KeyCode::Digit2, KeyCode::Digit6, KeyCode::Digit0] {
@@ -348,7 +348,7 @@ pub fn run(dir: &Path) -> i32 {
     s.expire_width_hint();
 
     // Масштаб: Ctrl + колесо приближает к курсору, выделение в увеличенном виде точное.
-    s.on_key(Some(KeyCode::KeyV), None, None);
+    s.on_key(Some(KeyCode::KeyM), None, None);
     s.on_right_press();
     for _ in 0..3 {
         s.on_zoom(0, 1.0, 400.0, 300.0);
@@ -597,7 +597,14 @@ fn edit_check(c: &mut Check, dir: &Path, font: Option<Arc<ab_glyph::FontVec>>) {
     ctrl_z(&mut s, false);
     c.ok("edit: undo text edit", matches!(&s.shapes()[3].kind, Kind::Text { text, .. } if text == "Hi"));
 
-    // Новая область на том же мониторе: разметка остаётся.
+    // Курсор не трогает выделение: протяжка по пустому месту ничего не выделяет.
+    let before = s.result().unwrap();
+    drag(&mut s, 0, (100.0, 100.0), (800.0, 600.0));
+    let after = s.result().unwrap();
+    c.ok("edit: pointer drag keeps selection", (after.width(), after.height()) == (before.width(), before.height()));
+
+    // Новая область на том же мониторе (рамка, M): разметка остаётся.
+    s.on_key(Some(KeyCode::KeyM), None, None);
     drag(&mut s, 0, (100.0, 100.0), (800.0, 600.0));
     c.ok("edit: new area keeps shapes", s.shapes().len() == 4);
     let img = s.result().unwrap();

@@ -8,6 +8,8 @@ use tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
+    /// Курсор (V): выбрать, двигать и менять готовые фигуры.
+    Pointer,
     SelectRect,
     SelectLasso,
     Pencil,
@@ -24,7 +26,8 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 14] = [
+        Tool::Pointer,
         Tool::SelectRect,
         Tool::SelectLasso,
         Tool::Pencil,
@@ -44,9 +47,27 @@ impl Tool {
         matches!(self, Tool::SelectRect | Tool::SelectLasso)
     }
 
+    /// Инструмент, которым рисуют такую фигуру (подпись образца толщины).
+    pub fn of(kind: &Kind) -> Tool {
+        match kind {
+            Kind::Pencil(_) => Tool::Pencil,
+            Kind::Marker(_) => Tool::Marker,
+            Kind::Line(..) => Tool::Line,
+            Kind::Arrow(..) => Tool::Arrow,
+            Kind::Rect(..) => Tool::Rect,
+            Kind::Text { .. } => Tool::Text,
+            Kind::Pixelate(..) => Tool::Pixelate,
+            Kind::FilledRect(..) => Tool::FilledRect,
+            Kind::Ellipse(..) => Tool::Ellipse,
+            Kind::Counter { .. } => Tool::Counter,
+            Kind::Ruler(..) => Tool::Ruler,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
-            Tool::SelectRect => "Рамка (V) · Shift: добавить, Alt: вычесть",
+            Tool::Pointer => "Курсор (V): выбрать и двигать фигуры",
+            Tool::SelectRect => "Рамка (M) · Shift: добавить, Alt: вычесть",
             Tool::SelectLasso => "Лассо (L) · Shift: добавить, Alt: вычесть",
             Tool::Pencil => "Карандаш (1)",
             Tool::Marker => "Маркер (2)",

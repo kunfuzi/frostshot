@@ -50,7 +50,7 @@ impl Btn {
     pub fn tooltip(self) -> String {
         let s = match self {
             // Колесо мыши меняет толщину: говорим об этом там, где его ищут.
-            Btn::Tool(t) if !t.is_selection() => return format!("{}  ·  колесо: толщина", t.label()),
+            Btn::Tool(t) if !t.is_selection() && t != Tool::Pointer => return format!("{}  ·  колесо: толщина", t.label()),
             Btn::Tool(t) => t.label(),
             Btn::Color => "Цвет  ·  колесо мыши: толщина",
             Btn::Undo => "Отменить (Ctrl+Z)",
@@ -280,6 +280,23 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
         }
     };
     match btn {
+        Btn::Tool(Tool::Pointer) => {
+            // Стрелка курсора мыши.
+            let pts = [(10.0, 6.5), (10.0, 24.0), (14.2, 20.0), (17.3, 26.5), (20.2, 25.2), (17.2, 18.8), (23.0, 18.8)];
+            let mut pb = PathBuilder::new();
+            for (i, (x, y)) in pts.iter().enumerate() {
+                let q = p(*x, *y);
+                if i == 0 {
+                    pb.move_to(q.0, q.1);
+                } else {
+                    pb.line_to(q.0, q.1);
+                }
+            }
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pm.fill_path(&path, &draw::paint(fg, 1.0), FillRule::Winding, Transform::identity(), None);
+            }
+        }
         Btn::Tool(Tool::SelectRect) => rect_outline(pm, 9.0, 9.0, 14.0, 14.0, true),
         Btn::Tool(Tool::SelectLasso) => {
             let c = p(16.0, 14.0);
