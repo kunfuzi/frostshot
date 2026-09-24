@@ -326,6 +326,11 @@ impl Settings {
                 self.record_msg = Some(format!("Клавиша {name} не поддерживается"));
                 return fx;
             }
+            // PrintScreen занят Windows (параметр «PrintScreen открывает захват экрана»):
+            // регистрируемся обработчиком и открываем выбор программы по умолчанию.
+            if combo == "PrintScreen" && self.shell.supported && self.shell.key_enabled && !self.shell.frostshot_is_handler() {
+                fx.shell_register = Some(true);
+            }
             if i == 0 {
                 cfg.hotkey = combo;
             } else {
