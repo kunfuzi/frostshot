@@ -29,6 +29,20 @@ fn drag(s: &mut Session, mon: usize, a: (f32, f32), b: (f32, f32)) {
     s.on_left_release(mon, b.0, b.1);
 }
 
+/// Проект с подменённым списком фигур (для проверки разбора недоверенных файлов).
+fn craft_evil(bytes: &[u8], shape_json: &str) -> Option<Vec<u8>> {
+    let rest = &bytes[10..];
+    let len = u32::from_le_bytes(rest[..4].try_into().ok()?) as usize;
+    let mut v: serde_json::Value = serde_json::from_slice(&rest[4..4 + len]).ok()?;
+    v["shapes"] = serde_json::Value::Array(vec![serde_json::from_str(shape_json).ok()?]);
+    let json = serde_json::to_vec(&v).ok()?;
+    let mut out = bytes[..10].to_vec();
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(&json);
+    out.extend_from_slice(&rest[4 + len..]);
+    Some(out)
+}
+
 fn alpha_at(img: &tiny_skia::Pixmap, x: u32, y: u32) -> u8 {
     img.data()[((y * img.width() + x) * 4 + 3) as usize]
 }
@@ -184,6 +198,20 @@ pub fn run(dir: &Path) -> i32 {
             output::save_png(&frame, &dir.join("frame_project.png")).ok();
         }
         Err(e) => c.ok(&format!("project roundtrip ({e})"), false),
+    }
+    // Вредоносный проект: отрицательная толщина пикселизации и NaN не должны вешать программу.
+    if let Some(evil) = craft_evil(&bytes, r#"{"kind":{"Pixelate":[[10.0,10.0],[200.0,200.0]]},"color":[0,0,0],"width":-4.0}"#) {
+        match Session::from_project(&evil, 0, 0, 1.0, 0.5, None) {
+            Ok(mut p) => {
+                let t = std::time::Instant::now();
+                p.render(0);
+                c.ok("evil width clamped, render finishes", t.elapsed().as_secs() < 2);
+            }
+            Err(e) => c.ok(&format!("evil width rejected ({e})"), true),
+        }
+    }
+    if let Some(evil) = craft_evil(&bytes, r#"{"kind":{"Line":[[1e39,0.0],[5.0,5.0]]},"color":[0,0,0],"width":3.0}"#) {
+        c.ok("non-finite coordinates rejected", Session::from_project(&evil, 0, 0, 1.0, 0.5, None).is_err());
     }
     c.ok("garbage is not a project", Session::from_project(b"PNG junk", 0, 0, 1.0, 0.5, None).is_err());
     let mut cut = bytes.clone();

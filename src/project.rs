@@ -64,12 +64,86 @@ pub fn encode(header: &Header, png: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Пределы для недоверенного файла.
+const MAX_PIXELS: u64 = 16384 * 16384;
+const MAX_SHAPES: usize = 10_000;
+const MAX_POINTS: usize = 200_000;
+const MAX_TEXT: usize = 10_000;
+
+/// Размер из заголовка PNG (IHDR) без распаковки.
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" || &png[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes(png[16..20].try_into().ok()?);
+    let h = u32::from_be_bytes(png[20..24].try_into().ok()?);
+    Some((w, h))
+}
+
+/// Проект приходит извне: отклоняем мусор, приводим числа к допустимым диапазонам.
+fn sanitize(h: &mut Header) -> Result<(), String> {
+    use crate::shapes::Kind;
+    let bad = |m: &str| Err(format!("Повреждённый проект: {m}"));
+    if h.width == 0 || h.height == 0 || h.width as u64 * h.height as u64 > MAX_PIXELS {
+        return bad("недопустимый размер снимка");
+    }
+    if h.shapes.len() > MAX_SHAPES || h.selection.len() > MAX_SHAPES {
+        return bad("слишком много объектов");
+    }
+    // Координаты в пределах снимка с запасом: фигура может выходить за край.
+    let lim = (h.width.max(h.height) as f32) * 4.0;
+    let ok = |v: f32| v.is_finite() && v.abs() <= lim;
+    let ok_pt = |p: &(f32, f32)| ok(p.0) && ok(p.1);
+    let mut points = 0usize;
+    for op in &h.selection {
+        match &op.shape {
+            SelDto::Rect { x, y, w, h: hh } => {
+                if ![*x, *y, *w, *hh].iter().all(|v| ok(*v)) || *w <= 0.0 || *hh <= 0.0 {
+                    return bad("неверное выделение");
+                }
+            }
+            SelDto::Poly { points: p } => {
+                points += p.len();
+                if !p.iter().all(ok_pt) {
+                    return bad("неверное выделение");
+                }
+            }
+        }
+    }
+    if !h.line_width.is_finite() {
+        return bad("неверная толщина");
+    }
+    h.line_width = h.line_width.clamp(1.0, 40.0);
+    h.color &= 0xFF_FFFF;
+    for s in &mut h.shapes {
+        if !s.width.is_finite() {
+            return bad("неверная толщина");
+        }
+        s.width = s.width.clamp(1.0, 40.0);
+        let pts_ok = match &s.kind {
+            Kind::Pencil(p) | Kind::Marker(p) => {
+                points += p.len();
+                p.iter().all(ok_pt)
+            }
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Pixelate(a, b) => ok_pt(a) && ok_pt(b),
+            Kind::Text { at, text } => ok_pt(at) && text.chars().count() <= MAX_TEXT,
+        };
+        if !pts_ok {
+            return bad("неверные координаты фигуры");
+        }
+    }
+    if points > MAX_POINTS {
+        return bad("слишком много точек");
+    }
+    Ok(())
+}
+
 pub fn decode(bytes: &[u8]) -> Result<(Header, &[u8]), String> {
     let bad = || "Это не проект Frostshot".to_string();
     let rest = bytes.strip_prefix(MAGIC.as_slice()).ok_or_else(bad)?;
     let len = u32::from_le_bytes(rest.get(..4).ok_or_else(bad)?.try_into().unwrap()) as usize;
     let json = rest.get(4..4 + len).ok_or_else(bad)?;
-    let header: Header = serde_json::from_slice(json).map_err(|e| format!("Повреждённый проект: {e}"))?;
+    let mut header: Header = serde_json::from_slice(json).map_err(|e| format!("Повреждённый проект: {e}"))?;
     if header.version > VERSION {
         return Err("Проект создан более новой версией Frostshot".into());
     }
@@ -77,5 +151,10 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, &[u8]), String> {
     if png.len() != header.png_len {
         return Err("Повреждённый проект: неполный снимок".into());
     }
+    // Размер картинки проверяем до распаковки, чтобы файл не заставил выделить гигабайты.
+    if png_size(png) != Some((header.width, header.height)) {
+        return Err("Повреждённый проект: размер снимка не совпадает".into());
+    }
+    sanitize(&mut header)?;
     Ok((header, png))
 }

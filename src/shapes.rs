@@ -162,7 +162,7 @@ fn pixelate(pm: &mut Pixmap, src: &Pixmap, a: Pt, b: Pt, w: f32, clip: Option<&M
     let y0 = (a.1.min(b.1).floor() as i32).clamp(0, sh);
     let x1 = (a.0.max(b.0).ceil() as i32).clamp(0, sw);
     let y1 = (a.1.max(b.1).ceil() as i32).clamp(0, sh);
-    let block = (8.0 + w * 2.0).round() as i32;
+    let block = ((8.0 + w * 2.0).round() as i32).max(2);
     let d = src.data();
     let mut by = y0;
     while by < y1 {

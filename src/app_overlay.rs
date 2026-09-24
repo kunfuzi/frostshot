@@ -197,6 +197,7 @@ impl App {
             if ov.reopened {
                 session.hibernate();
                 self.last = Some(session);
+                self.last_at = std::time::Instant::now();
             }
         }
         self.pending_save = None;
@@ -212,6 +213,7 @@ impl App {
         let rect = session.active_rect();
         session.hibernate();
         self.last = Some(session);
+        self.last_at = std::time::Instant::now();
         self.update_tray_last();
         if !self.config.notify {
             return;

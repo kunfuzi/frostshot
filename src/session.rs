@@ -308,7 +308,10 @@ impl Session {
     fn click_btn(&mut self, b: Btn) -> Action {
         match b {
             Btn::Tool(t) => self.set_tool(t),
-            Btn::Color => self.palette_open = !self.palette_open,
+            Btn::Color => {
+                self.palette_open = !self.palette_open;
+                self.save_menu = false;
+            }
             Btn::Swatch(i) => {
                 self.color = ui::PALETTE[i];
                 self.palette_open = false;

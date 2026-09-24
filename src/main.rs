@@ -40,6 +40,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
+/// Сколько хранить последний снимок для повторного открытия.
+const LAST_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 enum UserEvent {
     Hotkey(GlobalHotKeyEvent),
     Tray(TrayIconEvent),
@@ -74,6 +77,8 @@ struct App {
     overlay: Option<Overlay>,
     /// Последний снимок (усыплённая сессия) для повторного открытия.
     last: Option<Session>,
+    /// Когда last перестал использоваться: через LAST_TTL память освобождается.
+    last_at: std::time::Instant,
     toast: Option<toast::Toast>,
     toast_pos: (f32, f32),
     pending_save: Option<Pending>,
@@ -233,13 +238,22 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        let now = std::time::Instant::now();
         // Таймер уведомления.
-        let deadline = self.toast.as_ref().and_then(|t| t.deadline());
-        match deadline {
-            Some(d) if std::time::Instant::now() >= d => {
-                self.toast = None;
-                el.set_control_flow(ControlFlow::Wait);
+        if self.toast.as_ref().and_then(|t| t.deadline()).is_some_and(|d| now >= d) {
+            self.toast = None;
+        }
+        // Последний снимок держит полные кадры мониторов: освобождаем после простоя.
+        if self.last.is_some() && self.toast.is_none() && now >= self.last_at + LAST_TTL {
+            self.last = None;
+            if let Some(t) = &self.tray {
+                t.set_last_enabled(false);
             }
+            log::info!("last shot released after {} min", LAST_TTL.as_secs() / 60);
+        }
+        let toast_d = self.toast.as_ref().and_then(|t| t.deadline());
+        let last_d = self.last.as_ref().map(|_| self.last_at + LAST_TTL);
+        match toast_d.into_iter().chain(last_d).min() {
             Some(d) => el.set_control_flow(ControlFlow::WaitUntil(d)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -327,6 +341,7 @@ fn main() {
         tray: None,
         overlay: None,
         last: None,
+        last_at: std::time::Instant::now(),
         toast: None,
         toast_pos: (0.0, 0.0),
         pending_save: None,
