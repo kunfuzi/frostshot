@@ -261,6 +261,10 @@ impl App {
                     history::clear();
                     self.refresh_history();
                 }
+                history_popup::PopupClick::Close => {
+                    self.popup = None;
+                    self.popup_hide_at = None;
+                }
                 history_popup::PopupClick::None => {}
             },
             _ => {}

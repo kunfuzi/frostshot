@@ -42,6 +42,7 @@ enum Target {
     Delete(usize),
     Folder,
     Clear,
+    Close,
 }
 
 impl Target {
@@ -61,6 +62,7 @@ pub enum PopupClick {
     Delete(PathBuf),
     Folder,
     Clear,
+    Close,
 }
 
 pub struct HistoryPopup {
@@ -190,6 +192,7 @@ impl HistoryPopup {
             Some(Target::Delete(i)) => self.cards.get(i).map_or(PopupClick::None, |c| PopupClick::Delete(c.path.clone())),
             Some(Target::Folder) => PopupClick::Folder,
             Some(Target::Clear) => PopupClick::Clear,
+            Some(Target::Close) => PopupClick::Close,
             None => PopupClick::None,
         }
     }
@@ -231,7 +234,18 @@ fn draw_panel(pm: &mut Pixmap, cards: &[Card], cols: usize, hover: Option<Target
             let ts = f * s;
             let ty = (HEADER_H * s - draw::line_height(font, ts)) / 2.0;
             draw::draw_text(pm, font, "История", PAD * 1.5 * s, ty, ts, FG, 1.0, None);
-            let mut x = w - PAD * 1.5 * s;
+            // Крестик закрытия справа.
+            let cs = 28.0 * s;
+            let cr = Rect::from_xywh(w - PAD * s - cs, (HEADER_H * s - cs) / 2.0, cs, cs).unwrap();
+            if hover == Some(Target::Close) {
+                draw::fill_rounded(pm, cr, 5.0 * s, CARD_HOVER, 1.0);
+            }
+            let (cx, cy, k) = (cr.left() + cs / 2.0, cr.top() + cs / 2.0, 5.0 * s);
+            let xc = if hover == Some(Target::Close) { FG } else { MUTED };
+            draw::line(pm, cx - k, cy - k, cx + k, cy + k, xc, 1.0, 1.6 * s, None);
+            draw::line(pm, cx + k, cy - k, cx - k, cy + k, xc, 1.0, 1.6 * s, None);
+            rects.push((Target::Close, cr));
+            let mut x = cr.left() - 14.0 * s;
             for (target, text) in [(Target::Clear, "Очистить"), (Target::Folder, "Папка")] {
                 let ls = (f - 2.0) * s;
                 let tw = draw::text_size(font, text, ls).0;
