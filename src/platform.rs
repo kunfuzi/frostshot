@@ -79,13 +79,21 @@ pub fn printscreen_rivals() -> Vec<&'static str> {
     out
 }
 
-/// Имена exe запущенных процессов в нижнем регистре.
+/// Имена exe процессов текущего сеанса Windows в нижнем регистре. Программы
+/// других пользователей (другой сеанс) клавиатуру этого сеанса не перехватывают.
 pub fn running_processes() -> Vec<String> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+        use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
         let mut running: Vec<String> = Vec::new();
+        let mut own = u32::MAX;
+        // SAFETY: указатель на локальную переменную.
+        if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut own) } == 0 {
+            return running;
+        }
         // SAFETY: снимок закрывается; entry.dwSize задан, szExeFile завершён нулём.
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -96,6 +104,12 @@ pub fn running_processes() -> Vec<String> {
             entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
             let mut ok = Process32FirstW(snap, &mut entry) != 0;
             while ok {
+                // Сеанс не узнать (нет прав): процесс не наш, пропускаем.
+                let mut sid = u32::MAX;
+                if ProcessIdToSessionId(entry.th32ProcessID, &mut sid) == 0 || sid != own {
+                    ok = Process32NextW(snap, &mut entry) != 0;
+                    continue;
+                }
                 let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
                 running.push(String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase());
                 ok = Process32NextW(snap, &mut entry) != 0;
