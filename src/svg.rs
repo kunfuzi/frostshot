@@ -12,11 +12,11 @@ use tiny_skia::{Mask, Pixmap};
 const FONT_FAMILY: &str = "'Segoe UI', 'Helvetica Neue', Arial, sans-serif";
 
 /// SVG размером с габарит выделения. Координаты фигур переводятся из снимка в SVG.
-pub fn build(shot: &Pixmap, mask: &Mask, b: IBox, list: &[Shape], font: Option<&FontVec>) -> Result<String, String> {
+pub fn build(shot: &Pixmap, mask: &Mask, b: IBox, list: &[Shape], font: Option<&FontVec>, mm: Option<f32>) -> Result<String, String> {
     // Слой снимка: пикселизация вжигается, вне маски прозрачно.
     let mut base = shot.clone();
     for s in list.iter().filter(|s| matches!(s.kind, Kind::Pixelate(..))) {
-        shapes::render(&mut base, s, shot, font, Some(mask));
+        shapes::render(&mut base, s, shot, font, Some(mask), mm);
     }
     let md = mask.data();
     let fw = shot.width();
@@ -71,7 +71,7 @@ pub fn build(shot: &Pixmap, mask: &Mask, b: IBox, list: &[Shape], font: Option<&
     let _ = writeln!(o, r#"<g id="annotations"{}>"#, if shaped { r#" mask="url(#selection)""# } else { "" });
     let _ = writeln!(o, r#"<g transform="translate({} {})">"#, -(b.x as i64), -(b.y as i64));
     for s in list {
-        shape(&mut o, s, font);
+        shape(&mut o, s, font, mm);
     }
     o.push_str("</g>\n</g>\n</svg>\n");
     Ok(o)
@@ -176,7 +176,7 @@ fn ltrb(a: Pt, b: Pt) -> (f32, f32, f32, f32) {
     (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs())
 }
 
-fn shape(o: &mut String, s: &Shape, font: Option<&FontVec>) {
+fn shape(o: &mut String, s: &Shape, font: Option<&FontVec>, mm: Option<f32>) {
     let c = s.color;
     let w = s.width;
     match &s.kind {
@@ -212,7 +212,7 @@ fn shape(o: &mut String, s: &Shape, font: Option<&FontVec>) {
         }
         Kind::Text { at, text: t } if !t.trim().is_empty() => text(o, *at, t, shapes::font_size(w), c, font, ""),
         Kind::Counter { at, n: num, tip } => counter(o, *at, *num, *tip, c, w, font),
-        Kind::Ruler(a, b) => ruler(o, *a, *b, c, w, font),
+        Kind::Ruler(a, b) => ruler(o, *a, *b, c, w, font, mm),
         // Пикселизация уже в слое снимка.
         _ => {}
     }
@@ -293,7 +293,8 @@ fn counter(o: &mut String, at: Pt, num: u32, tip: Option<Pt>, c: [u8; 3], w: f32
     let _ = writeln!(o, "</g>");
 }
 
-fn ruler(o: &mut String, a: Pt, b: Pt, c: [u8; 3], w: f32, font: Option<&FontVec>) {
+#[allow(clippy::too_many_arguments)]
+fn ruler(o: &mut String, a: Pt, b: Pt, c: [u8; 3], w: f32, font: Option<&FontVec>, mm: Option<f32>) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len = (dx * dx + dy * dy).sqrt();
     if len < 1.0 {
@@ -310,15 +311,15 @@ fn ruler(o: &mut String, a: Pt, b: Pt, c: [u8; 3], w: f32, font: Option<&FontVec
     for e in [a, b] {
         seg(e.0 - px * t, e.1 - py * t, e.0 + px * t, e.1 + py * t);
     }
-    let label = shapes::ruler_label(a, b);
-    let size = (12.0 + w).max(13.0);
+    let label = shapes::ruler_label(a, b, mm);
+    let size = shapes::ruler_font(w);
     let (tw, th) = text_size(font, &label, size);
-    let pad = 4.0;
+    let pad = 6.0;
     let off = t + th / 2.0 + pad;
     let (mx, my) = ((a.0 + b.0) / 2.0 + px * off, (a.1 + b.1) / 2.0 + py * off);
     let _ = writeln!(
         o,
-        r#"<rect x="{}" y="{}" width="{}" height="{}" rx="4" fill="{}" fill-opacity="0.92"/>"#,
+        r#"<rect x="{}" y="{}" width="{}" height="{}" rx="5" fill="{}" fill-opacity="0.92"/>"#,
         n(mx - tw / 2.0 - pad),
         n(my - th / 2.0 - pad / 2.0),
         n(tw + 2.0 * pad),

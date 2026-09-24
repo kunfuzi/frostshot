@@ -280,6 +280,39 @@ pub fn work_area(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
+/// Миллиметров на пиксель у монитора в точке (x, y): физическая ширина из
+/// Windows (EDID) делится на ширину снимка в пикселях. None: размер неизвестен.
+pub fn monitor_mm_per_px(x: i32, y: i32, width_px: u32) -> Option<f32> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::*;
+        // SAFETY: MONITORINFOEXW с корректным cbSize; DC удаляется.
+        let mm = unsafe {
+            let hm = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+            let mut mi: MONITORINFOEXW = std::mem::zeroed();
+            mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            if GetMonitorInfoW(hm, (&mut mi as *mut MONITORINFOEXW).cast()) == 0 {
+                return None;
+            }
+            let dc = CreateDCW(mi.szDevice.as_ptr(), mi.szDevice.as_ptr(), std::ptr::null(), std::ptr::null());
+            if dc.is_null() {
+                return None;
+            }
+            let mm = GetDeviceCaps(dc, HORZSIZE as _);
+            DeleteDC(dc);
+            mm
+        };
+        // Разумные мониторы: от 10 до 250 см по ширине; иначе данные драйвера мусорные.
+        (100..=2500).contains(&mm).then(|| mm as f32 / width_px.max(1) as f32)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (x, y, width_px);
+        None
+    }
+}
+
 /// Окно не активируется по клику (уведомление не отбирает фокус у текущей программы).
 pub fn make_no_activate(window: &winit::window::Window) {
     #[cfg(windows)]

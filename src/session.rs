@@ -142,6 +142,8 @@ pub struct Session {
     status: Option<(String, Option<std::time::Instant>)>,
     /// Идёт распознавание текста в фоне.
     pub ocr_busy: bool,
+    /// Миллиметров на пиксель у каждого монитора (линейка), None: неизвестно.
+    mm: Vec<Option<f32>>,
 }
 
 /// Сколько держать строку статуса.
@@ -198,6 +200,10 @@ impl Session {
     pub fn new(shots: Vec<MonitorShot>, scales: Vec<f32>, dim: f32, color: u32, width: f32, font: Option<Arc<FontVec>>) -> Self {
         let dimmed: Vec<Pixmap> = shots.iter().map(|s| dim_pixmap(&s.pixmap, dim)).collect();
         let n = shots.len();
+        let mm = shots
+            .iter()
+            .map(|s| crate::platform::monitor_mm_per_px(s.x + s.width() as i32 / 2, s.y + s.height() as i32 / 2, s.width()))
+            .collect();
         Self {
             base: dimmed.clone(),
             frame: dimmed.clone(),
@@ -233,6 +239,7 @@ impl Session {
             width_hint_at: None,
             status: None,
             ocr_busy: false,
+            mm,
         }
     }
 
@@ -303,6 +310,7 @@ impl Session {
             shapes: self.shapes.clone(),
             color: self.color,
             line_width: self.width,
+            mm_per_px: self.mm[mon],
         };
         Some((header, shot))
     }
@@ -327,6 +335,10 @@ impl Session {
         s.sel = Some(sel);
         s.active = Some(0);
         s.shapes = h.shapes;
+        // Масштаб линейки монитора, где снимали, а не где открыли.
+        if let Some(k) = h.mm_per_px.filter(|k| k.is_finite() && *k > 0.0 && *k < 5.0) {
+            s.mm[0] = Some(k);
+        }
         // Фигуры проекта отменяются по одной, как при рисовании.
         s.undo_stack = (0..s.shapes.len()).map(|i| s.shapes[..i].to_vec()).collect();
         s.base_dirty = vec![true];
@@ -1298,11 +1310,12 @@ impl Session {
         let sel = if is_active { self.sel.as_ref().filter(|s| !s.is_empty()) } else { None };
         if let Some(sel) = sel {
             let clip = Some(sel.mask());
+            let mm = self.mm[mon];
             for sh in &self.shapes {
-                shapes::render(work, sh, shot, font, clip);
+                shapes::render(work, sh, shot, font, clip, mm);
             }
             if let Drag::Draw(sh) = &self.drag {
-                shapes::render(work, sh, shot, font, clip);
+                shapes::render(work, sh, shot, font, clip, mm);
             }
             if let (Some(te), Some(f)) = (&self.text, font) {
                 let size = shapes::font_size(self.width);
@@ -1416,6 +1429,22 @@ impl Session {
                     scale: s,
                 };
                 ui::draw_layout(frame, l, &st);
+
+                // Постоянная плашка толщины у панели инструментов, вне выделения.
+                let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|sh| self.tool == Tool::Pointer && sh.has_width());
+                let hint = match picked {
+                    Some(sh) => Some((Tool::of(&sh.kind), sh.width, sh.color)),
+                    None => ui::has_width(self.tool).then(|| (self.tool, self.width, draw::rgb(self.color))),
+                };
+                if let (Some((t, w, c)), Some(f), Some(bb)) = (hint, font, sel.bbox()) {
+                    let (x0, y0) = view.to_scr(bb.x as f32, bb.y as f32);
+                    let sr = Rect::from_xywh(x0, y0, bb.w as f32 * view.z, bb.h as f32 * view.z);
+                    let (hw, hh) = ui::width_hint_size(f, t, w, view.z, s);
+                    let (fw, fh) = (frame.width() as f32, frame.height() as f32);
+                    if let Some((hx, hy)) = sr.and_then(|sr| ui::width_hint_spot(l, sr, hw, hh, fw, fh, s)) {
+                        ui::draw_width_hint(frame, f, t, w, c, view.z, hx, hy, s);
+                    }
+                }
             }
         }
 
@@ -1474,7 +1503,7 @@ impl Session {
         let sel = self.sel.as_mut().ok_or("нет выделения")?;
         sel.ensure();
         let b = sel.bbox().ok_or("пустое выделение")?;
-        crate::svg::build(&self.shots[mon].pixmap, sel.mask(), b, &self.shapes, self.font.as_deref())
+        crate::svg::build(&self.shots[mon].pixmap, sel.mask(), b, &self.shapes, self.font.as_deref(), self.mm[mon])
     }
 
     /// Итоговое изображение: габарит выделения, вне маски прозрачно.
@@ -1488,7 +1517,7 @@ impl Session {
         let mut full = shot.clone();
         let font = self.font.as_deref();
         for s in &self.shapes {
-            shapes::render(&mut full, s, shot, font, Some(sel.mask()));
+            shapes::render(&mut full, s, shot, font, Some(sel.mask()), self.mm[mon]);
         }
         let mut out = Pixmap::new(b.w, b.h)?;
         let fw = full.width();

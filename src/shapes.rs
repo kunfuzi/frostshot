@@ -299,7 +299,8 @@ fn polyline(pts: &[Pt]) -> Option<tiny_skia::Path> {
     pb.finish()
 }
 
-pub fn render(pm: &mut Pixmap, s: &Shape, src: &Pixmap, font: Option<&FontVec>, clip: Option<&Mask>) {
+/// mm: миллиметров на пиксель снимка (подпись линейки), None: только пиксели.
+pub fn render(pm: &mut Pixmap, s: &Shape, src: &Pixmap, font: Option<&FontVec>, clip: Option<&Mask>, mm: Option<f32>) {
     let c = s.color;
     match &s.kind {
         Kind::Pencil(pts) if !pts.is_empty() => {
@@ -338,7 +339,7 @@ pub fn render(pm: &mut Pixmap, s: &Shape, src: &Pixmap, font: Option<&FontVec>, 
             }
         }
         Kind::Counter { at, n, tip } => counter(pm, *at, *n, *tip, c, s.width, font, clip),
-        Kind::Ruler(a, b) => ruler(pm, *a, *b, c, s.width, font, clip),
+        Kind::Ruler(a, b) => ruler(pm, *a, *b, c, s.width, font, clip, mm),
         _ => {}
     }
 }
@@ -385,15 +386,26 @@ fn counter(pm: &mut Pixmap, at: Pt, n: u32, tip: Option<Pt>, c: Rgb, w: f32, fon
     }
 }
 
-/// Подпись длины: «240 px», для наклонной линии ещё проекции «(200 × 133)».
-pub fn ruler_label(a: Pt, b: Pt) -> String {
+/// Подпись длины: «240 px · 63,5 мм», для наклонной линии ещё проекции «(200 × 133)».
+/// mm: миллиметров на пиксель монитора, None: только пиксели.
+pub fn ruler_label(a: Pt, b: Pt, mm: Option<f32>) -> String {
     let (dx, dy) = ((b.0 - a.0).abs().round(), (b.1 - a.1).abs().round());
     let len = (dx * dx + dy * dy).sqrt().round();
-    if dx > 0.0 && dy > 0.0 { format!("{len} px ({dx} × {dy})") } else { format!("{len} px") }
+    let mut s = if dx > 0.0 && dy > 0.0 { format!("{len} px ({dx} × {dy})") } else { format!("{len} px") };
+    if let Some(k) = mm {
+        s += &format!(" · {} мм", format!("{:.1}", len * k).replace('.', ","));
+    }
+    s
+}
+
+/// Кегль подписи линейки.
+pub fn ruler_font(w: f32) -> f32 {
+    (16.0 + w * 1.5).max(18.0)
 }
 
 /// Линейка: тонкая линия, засечки на концах, подпись длины на плашке у середины.
-fn ruler(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, font: Option<&FontVec>, clip: Option<&Mask>) {
+#[allow(clippy::too_many_arguments)]
+fn ruler(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, font: Option<&FontVec>, clip: Option<&Mask>, mm: Option<f32>) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len = (dx * dx + dy * dy).sqrt();
     if len < 1.0 {
@@ -407,15 +419,15 @@ fn ruler(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, font: Option<&FontVec>, 
         draw::line(pm, e.0 - px * t, e.1 - py * t, e.0 + px * t, e.1 + py * t, c, 1.0, lw, clip);
     }
     if let Some(f) = font {
-        let text = ruler_label(a, b);
-        let size = (12.0 + w).max(13.0);
+        let text = ruler_label(a, b, mm);
+        let size = ruler_font(w);
         let (tw, th) = draw::text_size(f, &text, size);
-        let pad = 4.0;
+        let pad = 6.0;
         // Плашка сбоку от середины линии, чтобы не закрывать саму линию.
         let off = t + th / 2.0 + pad;
         let (mx, my) = ((a.0 + b.0) / 2.0 + px * off, (a.1 + b.1) / 2.0 + py * off);
         if let Some(r) = tiny_skia::Rect::from_xywh(mx - tw / 2.0 - pad, my - th / 2.0 - pad / 2.0, tw + 2.0 * pad, th + pad) {
-            if let Some(p) = draw::rounded_rect(r, 4.0) {
+            if let Some(p) = draw::rounded_rect(r, 5.0) {
                 pm.fill_path(&p, &draw::paint(c, 0.92), FillRule::Winding, Transform::identity(), clip);
             }
             let luma = 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;

@@ -63,6 +63,10 @@ pub fn run(dir: &Path) -> i32 {
         println!("INFO monitor {i}: at {},{} size {}x{}", s.x, s.y, s.width(), s.height());
         output::save_png(&s.pixmap, &dir.join(format!("shot_{i}.png"))).ok();
     }
+    for sh in &shots {
+        let mm = crate::platform::monitor_mm_per_px(sh.x + sh.width() as i32 / 2, sh.y + sh.height() as i32 / 2, sh.width());
+        println!("INFO monitor at {},{}: mm per px {:?} (width {:?} mm)", sh.x, sh.y, mm, mm.map(|k| k * sh.width() as f32));
+    }
     let sizes: Vec<(u32, u32)> = shots.iter().map(|s| (s.width(), s.height())).collect();
     let font = draw::load_font().map(Arc::new);
     c.ok("system font loaded", font.is_some());
@@ -369,8 +373,8 @@ pub fn run(dir: &Path) -> i32 {
     c.ok("ctrl+0 resets zoom", s.result().is_some_and(|i| i.width() == 200));
 
     // Линейка: подпись длины и отрисовка.
-    c.ok("ruler label", crate::shapes::ruler_label((0.0, 0.0), (200.0, 150.0)) == "250 px (200 × 150)");
-    c.ok("ruler label straight", crate::shapes::ruler_label((10.0, 5.0), (130.0, 5.0)) == "120 px");
+    c.ok("ruler label", crate::shapes::ruler_label((0.0, 0.0), (200.0, 150.0), None) == "250 px (200 × 150)");
+    c.ok("ruler label straight", crate::shapes::ruler_label((10.0, 5.0), (130.0, 5.0), Some(0.25)) == "120 px · 30,0 мм");
 
     // 7. Правый клик сбрасывает, второй закрывает.
     c.ok("right click resets selection", s.on_right_press() == Action::None && s.result().is_none());

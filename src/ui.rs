@@ -571,23 +571,15 @@ pub fn label_size(font: &FontVec, text: &str, s: f32) -> (f32, f32) {
 /// Плашка у курсора после прокрутки колеса: образец линии текущего цвета и толщины
 /// (как она выглядит на экране при текущем масштабе) и подпись со значением.
 #[allow(clippy::too_many_arguments)]
+/// Инструменты, у которых колесо меняет размер (для них видна плашка толщины).
+pub fn has_width(tool: Tool) -> bool {
+    !matches!(tool, Tool::Pointer | Tool::SelectRect | Tool::SelectLasso | Tool::FilledRect)
+}
+
+/// Образец толщины у курсора (после прокрутки колеса).
+#[allow(clippy::too_many_arguments)]
 pub fn width_hint(pm: &mut Pixmap, font: &FontVec, tool: Tool, width: f32, c: Rgb, zoom: f32, cx: f32, cy: f32, s: f32) {
-    let size = ui_font() * s;
-    let (label, sample_h) = match tool {
-        Tool::Text => (format!("Размер текста {}", crate::shapes::font_size(width).round()), crate::shapes::font_size(width) * zoom),
-        Tool::Counter => (format!("Размер номера {}", width.round()), crate::shapes::counter_radius(width) * 2.0 * zoom),
-        Tool::Marker => (format!("Толщина {}", width.round()), crate::shapes::marker_width(width) * zoom),
-        Tool::Pixelate => (format!("Блок {} px", (8.0 + width * 2.0).round()), 24.0 * s),
-        _ => (format!("Толщина {}", width.round()), width * zoom),
-    };
-    let sample_h = sample_h.clamp(2.0, 120.0 * s);
-    let sample_w = (96.0 * s).max(sample_h * 1.6);
-    let pad = 10.0 * s;
-    let (tw, th) = draw::text_size(font, &label, size);
-    let (hs, hint) = ((ui_font() - 3.0) * s, "колесо мыши");
-    let (hw, hh) = draw::text_size(font, hint, hs);
-    let w = sample_w.max(tw).max(hw) + 2.0 * pad;
-    let h = pad + sample_h + pad * 0.6 + th + hh + pad;
+    let (w, h) = width_hint_size(font, tool, width, zoom, s);
     let (mw, mh) = (pm.width() as f32, pm.height() as f32);
     // Справа вверху от курсора: справа внизу стоит лупа.
     let mut x = cx + 24.0 * s;
@@ -601,7 +593,72 @@ pub fn width_hint(pm: &mut Pixmap, font: &FontVec, tool: Tool, width: f32, c: Rg
             y = mh - h;
         }
     }
-    let (x, y) = (x.max(0.0), y.max(0.0));
+    draw_width_hint(pm, font, tool, width, c, zoom, x.max(0.0), y.max(0.0), s);
+}
+
+/// Место для постоянной плашки толщины: у панели инструментов, вне выделения
+/// и других панелей. None: места нет.
+pub fn width_hint_spot(l: &Layout, sel: Rect, w: f32, h: f32, mw: f32, mh: f32, s: f32) -> Option<(f32, f32)> {
+    let v = *l.panels.first()?;
+    let gap = (8.0 * s).round();
+    let cands = [
+        (v.left(), v.bottom() + gap),
+        (v.right() - w, v.bottom() + gap),
+        (v.left(), v.top() - gap - h),
+        (v.right() - w, v.top() - gap - h),
+        (v.right() + gap, v.top()),
+        (v.left() - gap - w, v.top()),
+    ];
+    cands.into_iter().find(|&(x, y)| {
+        let Some(r) = Rect::from_xywh(x, y, w, h) else { return false };
+        x >= 0.0 && y >= 0.0 && x + w <= mw && y + h <= mh && !ov(r, sel) && !l.panels.iter().any(|p| ov(r, *p))
+    })
+}
+
+/// Размер плашки толщины (ширина, высота).
+pub fn width_hint_size(font: &FontVec, tool: Tool, width: f32, zoom: f32, s: f32) -> (f32, f32) {
+    let m = hint_metrics(font, tool, width, zoom, s);
+    (m.w, m.h)
+}
+
+struct HintMetrics {
+    label: String,
+    sample_h: f32,
+    sample_w: f32,
+    w: f32,
+    h: f32,
+}
+
+fn hint_metrics(font: &FontVec, tool: Tool, width: f32, zoom: f32, s: f32) -> HintMetrics {
+    let size = ui_font() * s;
+    let (label, sample_h) = match tool {
+        Tool::Text => (format!("Размер текста {}", crate::shapes::font_size(width).round()), crate::shapes::font_size(width) * zoom),
+        Tool::Counter => (format!("Размер номера {}", width.round()), crate::shapes::counter_radius(width) * 2.0 * zoom),
+        Tool::Marker => (format!("Толщина {}", width.round()), crate::shapes::marker_width(width) * zoom),
+        Tool::Pixelate => (format!("Блок {} px", (8.0 + width * 2.0).round()), 24.0 * s),
+        _ => (format!("Толщина {}", width.round()), width * zoom),
+    };
+    let sample_h = sample_h.clamp(2.0, 120.0 * s);
+    let sample_w = (96.0 * s).max(sample_h * 1.6);
+    let pad = 10.0 * s;
+    let (tw, th) = draw::text_size(font, &label, size);
+    let (hw, hh) = draw::text_size(font, HINT, (ui_font() - 3.0) * s);
+    let w = sample_w.max(tw).max(hw) + 2.0 * pad;
+    let h = pad + sample_h + pad * 0.6 + th + hh + pad;
+    HintMetrics { label, sample_h, sample_w, w, h }
+}
+
+const HINT: &str = "колесо мыши";
+
+/// Плашка толщины в точке (x, y): образец, размер, «колесо мыши».
+#[allow(clippy::too_many_arguments)]
+pub fn draw_width_hint(pm: &mut Pixmap, font: &FontVec, tool: Tool, width: f32, c: Rgb, zoom: f32, x: f32, y: f32, s: f32) {
+    let HintMetrics { label, sample_h, sample_w, w, h } = hint_metrics(font, tool, width, zoom, s);
+    let size = ui_font() * s;
+    let pad = 10.0 * s;
+    let (tw, th) = draw::text_size(font, &label, size);
+    let (hs, hint) = ((ui_font() - 3.0) * s, HINT);
+    let hw = draw::text_size(font, hint, hs).0;
     if let Some(r) = Rect::from_xywh(x, y, w, h) {
         draw::fill_rounded(pm, r, 6.0 * s, PANEL, 0.94);
     }

@@ -36,6 +36,9 @@ pub struct Header {
     pub shapes: Vec<Shape>,
     pub color: u32,
     pub line_width: f32,
+    /// Миллиметров на пиксель у монитора снимка (для линейки).
+    #[serde(default)]
+    pub mm_per_px: Option<f32>,
 }
 
 pub fn op_to_dto(op: &SelOp) -> OpDto {
