@@ -45,6 +45,8 @@ pub enum Kind {
     Email,
     Phone,
     Card,
+    /// Длинный номер: счёт, договор, документ (12+ цифр), СНИЛС, паспорт.
+    Number,
     Secret,
     Ip,
 }
@@ -55,6 +57,7 @@ impl Kind {
             Kind::Email => "почта",
             Kind::Phone => "телефон",
             Kind::Card => "карта",
+            Kind::Number => "номер",
             Kind::Secret => "ключ/пароль",
             Kind::Ip => "IP",
         }
@@ -83,7 +86,11 @@ fn patterns() -> &'static Patterns {
                 ),
                 // Длинная строка из букв разного регистра и цифр: токены, ключи, хэши паролей.
                 (Kind::Secret, r(r"\b[A-Za-z0-9_\-+/=]{24,}\b")),
-                (Kind::Card, r(r"\b(?:\d[ \-]?){12,18}\d\b")),
+                // Длинное число целиком (группы через пробел или дефис). Карта по Луну
+                // помечается как карта, остальное как номер: счёт (20 цифр), договор и т.п.
+                (Kind::Number, r(r"\b\d(?:[ \-]?\d){11,}\b")),
+                // СНИЛС и паспорт РФ в привычной записи.
+                (Kind::Number, r(r"\b\d{3}-\d{3}-\d{3}[ \-]\d{2}\b|\b\d{2} \d{2} \d{6}\b")),
                 (
                     Kind::Phone,
                     r(r"(?:\+\d{1,3}|\b8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}\b|\+\d[\d\s\-()]{8,16}\d"),
@@ -161,8 +168,9 @@ pub fn find_sensitive(lines: &[Line], pad: f32) -> Vec<(Kind, Rect)> {
                 if overlaps(&taken, m.start(), m.end()) || !accept(*kind, m.as_str(), i) {
                     continue;
                 }
+                let kind = if *kind == Kind::Number && luhn(m.as_str()) { Kind::Card } else { *kind };
                 if let Some(r) = rect_for(line, &spans, m.start(), m.end()) {
-                    out.push((*kind, r));
+                    out.push((kind, r));
                     taken.push((m.start(), m.end()));
                 }
             }
@@ -217,11 +225,27 @@ mod tests {
         assert!(kinds.contains(&Kind::Email));
         assert!(kinds.contains(&Kind::Phone));
         assert_eq!(kinds.iter().filter(|k| **k == Kind::Card).count(), 1, "{kinds:?}");
+        // «1234 5678 9012 3456» не карта по Луну, но длинный номер: тоже скрывается.
+        assert_eq!(kinds.iter().filter(|k| **k == Kind::Number).count(), 1, "{kinds:?}");
         assert_eq!(kinds.iter().filter(|k| **k == Kind::Ip).count(), 1);
         assert_eq!(kinds.iter().filter(|k| **k == Kind::Secret).count(), 2);
         // Телефон из трёх слов: прямоугольник охватывает их все.
         let phone = f.iter().find(|(k, _)| *k == Kind::Phone).unwrap().1;
         assert!(phone.width() > 3.0 * 16.0);
+    }
+
+    #[test]
+    fn long_numbers_and_documents() {
+        let lines = vec![
+            line(&["Счёт", "4257", "1111", "2255", "6888", "4555"]),
+            line(&["р/с", "40817810099910004312"]),
+            line(&["СНИЛС", "112-233-445", "95", "паспорт", "45", "06", "123456"]),
+        ];
+        let f = find_sensitive(&lines, 0.0);
+        assert_eq!(f.len(), 4, "{f:?}");
+        assert!(f.iter().all(|(k, _)| *k == Kind::Number));
+        // Весь 20-значный номер одним прямоугольником.
+        assert!(f[0].1.width() > 5.0 * 32.0);
     }
 
     #[test]
