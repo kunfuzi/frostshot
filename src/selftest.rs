@@ -359,6 +359,11 @@ pub fn run(dir: &Path) -> i32 {
     ocr_check(&mut c, dir);
     history_check(&mut c);
 
+    // Список процессов читается: в нём есть сам Frostshot.
+    let procs = crate::platform::running_processes();
+    c.ok("process list contains frostshot.exe", procs.iter().any(|p| p == "frostshot.exe"));
+    println!("INFO printscreen rivals running: {:?}", crate::platform::printscreen_rivals());
+
     println!("{} failures", c.fails);
     if c.fails == 0 { 0 } else { 1 }
 }

@@ -49,6 +49,67 @@ pub fn open_folder(path: &Path) {
     }
 }
 
+/// Программы, которые обычно перехватывают PrintScreen (хуком клавиатуры или
+/// хоткеем): имя процесса в нижнем регистре и название для пользователя.
+const PRINTSCREEN_RIVALS: &[(&str, &str)] = &[
+    ("lightshot.exe", "Lightshot"),
+    ("flameshot.exe", "Flameshot"),
+    ("sharex.exe", "ShareX"),
+    ("greenshot.exe", "Greenshot"),
+    ("snagit32.exe", "Snagit"),
+    ("snagitcapture.exe", "Snagit"),
+    ("picpick.exe", "PicPick"),
+    ("screenpresso.exe", "Screenpresso"),
+    ("joxi.exe", "Joxi"),
+    ("monosnap.exe", "Monosnap"),
+    ("snipaste.exe", "Snipaste"),
+    ("fscapture.exe", "FastStone Capture"),
+    ("screenshotcaptor.exe", "Screenshot Captor"),
+];
+
+/// Запущенные программы из PRINTSCREEN_RIVALS, без повторов, в порядке списка.
+pub fn printscreen_rivals() -> Vec<&'static str> {
+    let running = running_processes();
+    let mut out: Vec<&'static str> = Vec::new();
+    for (exe, name) in PRINTSCREEN_RIVALS {
+        if running.iter().any(|r| r == exe) && !out.contains(name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Имена exe запущенных процессов в нижнем регистре.
+pub fn running_processes() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+        let mut running: Vec<String> = Vec::new();
+        // SAFETY: снимок закрывается; entry.dwSize задан, szExeFile завершён нулём.
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return Vec::new();
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snap, &mut entry) != 0;
+            while ok {
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                running.push(String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase());
+                ok = Process32NextW(snap, &mut entry) != 0;
+            }
+            CloseHandle(snap);
+        }
+        running
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 /// Windows 11: "Использовать PrtScn для открытия Snipping Tool" перехватывает клавишу.
 pub fn printscreen_taken_by_system() -> bool {
     #[cfg(windows)]
@@ -355,6 +416,8 @@ pub struct ShellStatus {
     pub handler: Option<String>,
     /// Включён ли параметр Windows «PrintScreen открывает захват экрана».
     pub key_enabled: bool,
+    /// Запущенные программы, которые могут перехватывать PrintScreen.
+    pub rivals: Vec<&'static str>,
 }
 
 impl ShellStatus {
@@ -458,7 +521,7 @@ pub fn shell_status() -> ShellStatus {
             "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\ms-screenclip\\UserChoice",
             Some("ProgId"),
         );
-        ShellStatus { supported: true, registered, handler, key_enabled: printscreen_taken_by_system() }
+        ShellStatus { supported: true, registered, handler, key_enabled: printscreen_taken_by_system(), rivals: printscreen_rivals() }
     }
     #[cfg(not(windows))]
     {

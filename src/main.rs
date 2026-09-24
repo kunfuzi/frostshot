@@ -146,8 +146,10 @@ impl App {
             }
         }
 
+        // PrintScreen через Windows уже открывает Frostshot: про Ножницы предупреждать незачем.
         if self.config.hotkey.eq_ignore_ascii_case("PrintScreen")
             && platform::printscreen_taken_by_system()
+            && !platform::shell_status().frostshot_is_handler()
             && !self.config.printscreen_warned
         {
             self.config.printscreen_warned = true;
@@ -166,7 +168,38 @@ impl App {
                     .set_level(rfd::MessageLevel::Info)
                     .show();
             });
+        } else {
+            // Два окна подряд не показываем: о сторонних программах скажем при следующем запуске.
+            self.warn_printscreen_rivals();
         }
+    }
+
+    /// Предупредить один раз о каждой запущенной программе, которая перехватывает PrintScreen.
+    fn warn_printscreen_rivals(&mut self) {
+        let sh = platform::shell_status();
+        let uses_key = self.config.hotkey.eq_ignore_ascii_case("PrintScreen") || (sh.key_enabled && sh.frostshot_is_handler());
+        let new: Vec<&str> = sh.rivals.iter().copied().filter(|r| !self.config.rivals_warned.iter().any(|w| w == r)).collect();
+        if !uses_key || new.is_empty() {
+            return;
+        }
+        log::info!("printscreen rivals running: {new:?}");
+        self.config.rivals_warned.extend(new.iter().map(|r| r.to_string()));
+        self.config.save();
+        let names = new.join(", ");
+        let fallback = self.config.fallback_hotkey.clone();
+        std::thread::spawn(move || {
+            rfd::MessageDialog::new()
+                .set_title("Frostshot")
+                .set_description(format!(
+                    "Запущена программа, которая может перехватывать PrintScreen: {names}.
+
+                     Пока она работает, по PrintScreen может открываться она, а не Frostshot.                      Выключите в ней клавишу PrintScreen или уберите её из автозапуска.
+
+                     Frostshot также открывается по {fallback} и клику по иконке в трее."
+                ))
+                .set_level(rfd::MessageLevel::Info)
+                .show();
+        });
     }
 
     /// Команды из командной строки или от второго экземпляра.

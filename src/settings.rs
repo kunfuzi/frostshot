@@ -628,6 +628,13 @@ impl Settings {
                     };
                     text(pm, &status, pad, y, small, color);
                     y += gap_line;
+                    // Сторонние программы со своим перехватом PrintScreen.
+                    if !sh.rivals.is_empty() {
+                        text(pm, &format!("PrintScreen может перехватывать: {}", sh.rivals.join(", ")), pad, y, small, ERR);
+                        y += gap_line;
+                        text(pm, "Выключите в ней клавишу PrintScreen или закройте её", pad, y, small, MUTED);
+                        y += gap_line;
+                    }
                     let mut bx = pad;
                     if !sh.registered {
                         bx += button(pm, rects, Ctl::ShellRegister, bx, y, "Зарегистрировать Frostshot", false) + 8.0 * s;

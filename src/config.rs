@@ -18,6 +18,8 @@ pub struct Config {
     pub width: f32,
     /// Предупреждение про PrintScreen и Snipping Tool уже показано.
     pub printscreen_warned: bool,
+    /// Программы-перехватчики PrintScreen, о которых уже предупредили.
+    pub rivals_warned: Vec<String>,
     /// Размер шрифта подсказок и подписей в px при масштабе 100%.
     pub ui_font_size: f32,
     /// Запуск при входе в систему (зеркало реального состояния).
@@ -51,6 +53,7 @@ impl Default for Config {
             color: 0xE24B4A,
             width: 4.0,
             printscreen_warned: false,
+            rivals_warned: Vec::new(),
             ui_font_size: 18.0,
             autostart: false,
             save_on_copy: false,
