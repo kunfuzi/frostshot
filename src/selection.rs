@@ -57,11 +57,6 @@ pub struct IBox {
     pub h: u32,
 }
 
-impl IBox {
-    pub fn rect(&self) -> Rect {
-        Rect::from_xywh(self.x as f32, self.y as f32, self.w as f32, self.h as f32).unwrap()
-    }
-}
 
 pub struct Selection {
     w: u32,

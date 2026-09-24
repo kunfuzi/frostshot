@@ -286,6 +286,27 @@ pub fn run(dir: &Path) -> i32 {
     // Меню сохранения: кнопка открывает меню, пункт даёт действие.
     s.on_key(Some(KeyCode::KeyV), None, None);
 
+    // Масштаб: Ctrl + колесо приближает к курсору, выделение в увеличенном виде точное.
+    s.on_key(Some(KeyCode::KeyV), None, None);
+    s.on_right_press();
+    for _ in 0..3 {
+        s.on_zoom(0, 1.0, 400.0, 300.0);
+    }
+    let z = 1.25f32.powi(3);
+    drag(&mut s, 0, (200.0, 200.0), (400.0, 400.0));
+    let img = s.result().unwrap();
+    let want = (200.0 / z).round() as i32;
+    c.ok(&format!("zoomed selection {}x{} ~ {want}", img.width(), img.height()), (img.width() as i32 - want).abs() <= 1 && (img.height() as i32 - want).abs() <= 1);
+    s.on_move(0, 300.0, 300.0);
+    let frame = s.render(0).clone();
+    output::save_png(&frame, &dir.join("frame_zoom.png")).ok();
+    s.mods = Mods { ctrl: true, ..Default::default() };
+    s.on_key(Some(KeyCode::Digit0), None, None);
+    s.mods = Mods::default();
+    s.on_right_press();
+    drag(&mut s, 0, (200.0, 200.0), (400.0, 400.0));
+    c.ok("ctrl+0 resets zoom", s.result().is_some_and(|i| i.width() == 200));
+
     // 7. Правый клик сбрасывает, второй закрывает.
     c.ok("right click resets selection", s.on_right_press() == Action::None && s.result().is_none());
     c.ok("second right click closes", s.on_right_press() == Action::Close);

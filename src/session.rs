@@ -37,6 +37,37 @@ enum Drag {
     Draw(Shape),
 }
 
+/// Масштаб и сдвиг вида монитора (Ctrl + колесо). Точка экрана (x, y)
+/// соответствует точке снимка (ox + x / z, oy + y / z).
+#[derive(Clone, Copy, Debug)]
+struct View {
+    z: f32,
+    ox: f32,
+    oy: f32,
+}
+
+impl View {
+    const ONE: View = View { z: 1.0, ox: 0.0, oy: 0.0 };
+
+    fn to_img(&self, x: f32, y: f32) -> Pt {
+        (self.ox + x / self.z, self.oy + y / self.z)
+    }
+
+    fn to_scr(&self, x: f32, y: f32) -> Pt {
+        ((x - self.ox) * self.z, (y - self.oy) * self.z)
+    }
+
+    fn is_one(&self) -> bool {
+        self.z == 1.0 && self.ox == 0.0 && self.oy == 0.0
+    }
+
+    /// Не показывать пустоту за краем снимка.
+    fn clamp(&mut self, w: f32, h: f32) {
+        self.ox = self.ox.clamp(0.0, (w - w / self.z).max(0.0));
+        self.oy = self.oy.clamp(0.0, (h - h / self.z).max(0.0));
+    }
+}
+
 struct TextEdit {
     at: Pt,
     text: String,
@@ -49,6 +80,11 @@ pub struct Session {
     base: Vec<Pixmap>,
     base_dirty: Vec<bool>,
     frame: Vec<Pixmap>,
+    /// Слой снимка (выделение, фигуры) до масштабирования вида.
+    work: Vec<Pixmap>,
+    views: Vec<View>,
+    /// Сдвиг вида средней кнопкой: монитор, точка экрана и смещение в начале.
+    pan: Option<(usize, Pt, Pt)>,
     /// Мониторы, которым нужна перерисовка.
     pub dirty: Vec<bool>,
     active: Option<usize>,
@@ -123,6 +159,9 @@ impl Session {
         Self {
             base: dimmed.clone(),
             frame: dimmed.clone(),
+            work: dimmed.clone(),
+            views: vec![View::ONE; n],
+            pan: None,
             dimmed,
             shots,
             scales,
@@ -166,6 +205,7 @@ impl Session {
         self.dimmed = Vec::new();
         self.base = Vec::new();
         self.frame = Vec::new();
+        self.work = Vec::new();
     }
 
     /// Вернуть сессию к показу: буферы заново, временное состояние сброшено, разметка на месте.
@@ -174,8 +214,11 @@ impl Session {
             self.dimmed = self.shots.iter().map(|s| dim_pixmap(&s.pixmap, self.dim)).collect();
             self.base = self.dimmed.clone();
             self.frame = self.dimmed.clone();
+            self.work = self.dimmed.clone();
         }
         let n = self.shots.len();
+        self.views = vec![View::ONE; n];
+        self.pan = None;
         self.base_dirty = vec![true; n];
         self.dirty = vec![true; n];
         self.drag = Drag::None;
@@ -269,7 +312,10 @@ impl Session {
         let mon = self.active?;
         let b = self.sel.as_ref()?.bbox()?;
         let (w, h) = self.shot_size(mon);
-        Some(ui::layout(b.rect(), w as f32, h as f32, self.scales[mon], self.palette_open, self.save_menu))
+        let v = self.views[mon];
+        let (x0, y0) = v.to_scr(b.x as f32, b.y as f32);
+        let r = Rect::from_xywh(x0, y0, b.w as f32 * v.z, b.h as f32 * v.z)?;
+        Some(ui::layout(r, w as f32, h as f32, self.scales[mon], self.palette_open, self.save_menu))
     }
 
     fn commit_text(&mut self) {
@@ -400,8 +446,21 @@ impl Session {
         self.cursor = Some((mon, (x, y)));
         self.mark(mon);
 
+        if let Some((pm, start, o)) = self.pan {
+            if pm == mon {
+                let (w, h) = self.shot_size(mon);
+                let v = &mut self.views[mon];
+                v.ox = o.0 - (x - start.0) / v.z;
+                v.oy = o.1 - (y - start.1) / v.z;
+                v.clamp(w as f32, h as f32);
+                self.base_dirty[mon] = true;
+                return;
+            }
+        }
+
         if self.active == Some(mon) {
-            let p = self.clamp(mon, (x, y));
+            let img = self.views[mon].to_img(x, y);
+            let p = self.clamp(mon, img);
             let shift = self.mods.shift;
             match &mut self.drag {
                 Drag::None => {
@@ -492,7 +551,8 @@ impl Session {
 
     pub fn on_left_press(&mut self, mon: usize, x: f32, y: f32) -> Action {
         self.on_move(mon, x, y);
-        let p = self.clamp(mon, (x, y));
+        let (ix, iy) = self.views[mon].to_img(x, y);
+        let p = self.clamp(mon, (ix, iy));
 
         if self.active == Some(mon) {
             if let Some(l) = self.layout() {
@@ -549,9 +609,9 @@ impl Session {
                 return Action::None;
             }
             let sel = self.sel.as_ref().unwrap();
-            let grab = 8.0 * self.scales[mon];
+            let grab = 8.0 * self.scales[mon] / self.views[mon].z;
             if let Some(r) = sel.single_rect() {
-                if let Some(h) = handles(r).iter().position(|hp| dist(*hp, (x, y)) <= grab) {
+                if let Some(h) = handles(r).iter().position(|hp| dist(*hp, (ix, iy)) <= grab) {
                     self.drag = Drag::Resize { handle: h, orig: r };
                     return Action::None;
                 }
@@ -559,7 +619,7 @@ impl Session {
             // Выделение на весь монитор двигать некуда: протягивание начинает новое.
             let (w, h) = self.shot_size(mon);
             let whole = sel.bbox().is_some_and(|b| b.w == w && b.h == h);
-            if sel.contains(x, y) && !whole {
+            if sel.contains(ix, iy) && !whole {
                 self.drag = Drag::Move { last: p };
                 return Action::None;
             }
@@ -574,7 +634,8 @@ impl Session {
             self.drag = Drag::None;
             return Action::None;
         };
-        let p = self.clamp(active, (x, y));
+        let img = self.views[active].to_img(x, y);
+        let p = self.clamp(active, img);
         let _ = mon;
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::NewSel { add, fresh, lasso, start, pts } => {
@@ -674,6 +735,42 @@ impl Session {
         Action::None
     }
 
+    /// Ctrl + колесо: приблизить вид монитора к точке под курсором (экранные x, y).
+    pub fn on_zoom(&mut self, mon: usize, lines: f32, x: f32, y: f32) {
+        let (w, h) = self.shot_size(mon);
+        let v = &mut self.views[mon];
+        let (ix, iy) = v.to_img(x, y);
+        let mut z = (v.z * 1.25f32.powf(lines.signum())).clamp(1.0, 16.0);
+        if (z - 1.0).abs() < 0.03 {
+            z = 1.0;
+        }
+        v.z = z;
+        v.ox = ix - x / z;
+        v.oy = iy - y / z;
+        v.clamp(w as f32, h as f32);
+        self.mark(mon);
+    }
+
+    pub fn reset_zoom(&mut self) {
+        for (i, v) in self.views.iter_mut().enumerate() {
+            if !v.is_one() {
+                *v = View::ONE;
+                self.dirty[i] = true;
+            }
+        }
+    }
+
+    /// Средняя кнопка: сдвиг увеличенного вида.
+    pub fn on_middle(&mut self, mon: usize, pressed: bool, x: f32, y: f32) {
+        self.pan = if pressed && self.views[mon].z > 1.0 {
+            let v = self.views[mon];
+            Some((mon, (x, y), (v.ox, v.oy)))
+        } else {
+            None
+        };
+        self.mark(mon);
+    }
+
     pub fn on_wheel(&mut self, lines: f32) {
         self.width = (self.width + lines.signum()).clamp(1.0, 40.0);
         if let Some((m, _)) = self.cursor {
@@ -738,6 +835,10 @@ impl Session {
                     self.redo_last();
                     Action::None
                 }
+                KeyCode::Digit0 | KeyCode::Numpad0 => {
+                    self.reset_zoom();
+                    Action::None
+                }
                 _ => Action::None,
             };
         }
@@ -770,6 +871,9 @@ impl Session {
         if m != mon {
             return CursorIcon::Crosshair;
         }
+        if self.pan.is_some() {
+            return CursorIcon::Grabbing;
+        }
         match &self.drag {
             Drag::Move { .. } => return CursorIcon::Move,
             Drag::Resize { handle, .. } => return handle_cursor(*handle),
@@ -795,13 +899,15 @@ impl Session {
                 if self.mods.shift || self.mods.alt {
                     return CursorIcon::Crosshair;
                 }
+                let v = self.views[mon];
+                let (ix, iy) = v.to_img(x, y);
                 if let Some(r) = sel.single_rect() {
-                    let grab = 8.0 * self.scales[mon];
-                    if let Some(h) = handles(r).iter().position(|hp| dist(*hp, (x, y)) <= grab) {
+                    let grab = 8.0 * self.scales[mon] / v.z;
+                    if let Some(h) = handles(r).iter().position(|hp| dist(*hp, (ix, iy)) <= grab) {
                         return handle_cursor(h);
                     }
                 }
-                if sel.contains(x, y) { CursorIcon::Move } else { CursorIcon::Crosshair }
+                if sel.contains(ix, iy) { CursorIcon::Move } else { CursorIcon::Crosshair }
             }
         }
     }
@@ -817,6 +923,7 @@ impl Session {
         }
         let layout = if is_active { self.layout() } else { None };
         let s = self.scales[mon];
+        let view = self.views[mon];
         let font = self.font.clone();
         let font = font.as_deref();
 
@@ -831,8 +938,9 @@ impl Session {
             }
         }
 
-        let frame = &mut self.frame[mon];
-        frame.data_mut().copy_from_slice(self.base[mon].data());
+        // 1. Слой снимка: выделение, фигуры, текст, контур. Координаты снимка.
+        let work = &mut self.work[mon];
+        work.data_mut().copy_from_slice(self.base[mon].data());
         let shot = &self.shots[mon].pixmap;
         let cursor = self.cursor.filter(|(m, _)| *m == mon).map(|(_, p)| p);
 
@@ -840,27 +948,27 @@ impl Session {
         if let Some(sel) = sel {
             let clip = Some(sel.mask());
             for sh in &self.shapes {
-                shapes::render(frame, sh, shot, font, clip);
+                shapes::render(work, sh, shot, font, clip);
             }
             if let Drag::Draw(sh) = &self.drag {
-                shapes::render(frame, sh, shot, font, clip);
+                shapes::render(work, sh, shot, font, clip);
             }
             if let (Some(te), Some(f)) = (&self.text, font) {
                 let size = shapes::font_size(self.width);
                 let c = draw::rgb(self.color);
-                draw::draw_text(frame, f, &te.text, te.at.0, te.at.1, size, c, 1.0, clip);
+                draw::draw_text(work, f, &te.text, te.at.0, te.at.1, size, c, 1.0, clip);
                 let last_line = te.text.rsplit('\n').next().unwrap_or("");
                 let (lw, _) = draw::text_size(f, last_line, size);
                 let lines = te.text.split('\n').count() as f32;
                 let lh = draw::line_height(f, size);
                 let cx = te.at.0 + lw + 2.0;
                 let cy = te.at.1 + (lines - 1.0) * lh;
-                draw::line(frame, cx, cy, cx, cy + lh, c, 1.0, (s * 1.5).max(1.0), None);
+                draw::line(work, cx, cy, cx, cy + lh, c, 1.0, (s * 1.5).max(1.0), None);
             }
 
             // Контур маски "бегущими муравьями".
-            let (fw, fh) = (frame.width(), frame.height());
-            let d = frame.data_mut();
+            let (fw, fh) = (work.width(), work.height());
+            let d = work.data_mut();
             for &(x, y) in sel.edges() {
                 if x >= fw || y >= fh {
                     continue;
@@ -872,11 +980,28 @@ impl Session {
                 d[i + 2] = c[2];
                 d[i + 3] = 255;
             }
+        }
 
+        // 2. Вид: без масштаба слой просто меняется местами с кадром, иначе
+        //    увеличивается без сглаживания (видны отдельные пиксели).
+        if view.is_one() {
+            std::mem::swap(&mut self.work[mon], &mut self.frame[mon]);
+        } else {
+            let frame = &mut self.frame[mon];
+            frame.fill(tiny_skia::Color::BLACK);
+            let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Nearest, ..PixmapPaint::default() };
+            let t = Transform::from_row(view.z, 0.0, 0.0, view.z, -view.ox * view.z, -view.oy * view.z);
+            frame.draw_pixmap(0, 0, self.work[mon].as_ref(), &paint, t, None);
+        }
+
+        // 3. Интерфейс поверх, в экранных координатах.
+        let frame = &mut self.frame[mon];
+        if let Some(sel) = sel {
             if let Some(r) = sel.single_rect() {
                 if self.tool.is_selection() && !matches!(self.drag, Drag::NewSel { .. }) {
                     let hs = (4.0 * s).round();
                     for (hx, hy) in handles(r) {
+                        let (hx, hy) = view.to_scr(hx, hy);
                         if let Some(hr) = Rect::from_xywh(hx - hs, hy - hs, hs * 2.0, hs * 2.0) {
                             draw::fill_rect(frame, hr, ui::ACCENT, 1.0, None);
                             if let Some(inner) = hr.inset(1.0, 1.0) {
@@ -890,8 +1015,9 @@ impl Session {
             if let (Some(f), Some(b)) = (font, sel.bbox()) {
                 let text = format!("{} × {}", b.w, b.h);
                 let (_, lh) = ui::label_size(f, &text, s);
-                let y = if b.y as f32 >= lh + 4.0 * s { b.y as f32 - lh - 4.0 * s } else { b.y as f32 + 4.0 * s };
-                ui::label(frame, f, &text, b.x as f32, y, s);
+                let (bx, by) = view.to_scr(b.x as f32, b.y as f32);
+                let y = if by >= lh + 4.0 * s { by - lh - 4.0 * s } else { by.max(0.0) + 4.0 * s };
+                ui::label(frame, f, &text, bx.max(0.0), y, s);
             }
 
             if let Some(l) = &layout {
@@ -903,7 +1029,7 @@ impl Session {
                             Tool::Counter => shapes::counter_radius(self.width),
                             _ => self.width / 2.0,
                         };
-                        draw::circle(frame, x, y, r.max(2.0), draw::rgb(self.color), 1.0, false, 1.0);
+                        draw::circle(frame, x, y, (r * view.z).max(2.0), draw::rgb(self.color), 1.0, false, 1.0);
                     }
                 }
                 let st = ui::UiState {
@@ -920,15 +1046,21 @@ impl Session {
         }
 
         let show_magnifier = sel.is_none() || matches!(self.drag, Drag::NewSel { .. } | Drag::Resize { .. });
-        if let (Some((x, y)), true) = (cursor, show_magnifier) {
-            ui::magnifier(frame, shot, x, y, s, font);
+        if let (Some((x, y)), true, None) = (cursor, show_magnifier, self.pan) {
+            let (ix, iy) = view.to_img(x, y);
+            ui::magnifier(frame, shot, x, y, ix, iy, s, font);
         }
 
-        if self.active.is_none() {
-            if let Some(f) = font {
-                let hint = "Выделите область  ·  клик: весь экран  ·  L: лассо  ·  Shift/Alt: добавить/вычесть  ·  Esc: выход";
+        if let Some(f) = font {
+            if self.active.is_none() {
+                let hint = "Выделите область  ·  клик: весь экран  ·  L: лассо  ·  Shift/Alt: добавить/вычесть  ·  Ctrl+колесо: масштаб  ·  Esc: выход";
                 let (w, _) = ui::label_size(f, hint, s);
                 ui::label(frame, f, hint, ((frame.width() as f32 - w) / 2.0).max(0.0), 16.0 * s, s);
+            }
+            if !view.is_one() {
+                let text = format!("Масштаб {}%  ·  Ctrl+0: 100%  ·  средняя кнопка: сдвиг", (view.z * 100.0).round());
+                let (w, h) = ui::label_size(f, &text, s);
+                ui::label(frame, f, &text, ((frame.width() as f32 - w) / 2.0).max(0.0), frame.height() as f32 - h - 16.0 * s, s);
             }
         }
         &self.frame[mon]

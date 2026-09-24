@@ -407,7 +407,8 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
 }
 
 /// Лупа у курсора: 15x15 пикселей снимка, координаты и цвет.
-pub fn magnifier(pm: &mut Pixmap, src: &Pixmap, cx: f32, cy: f32, s: f32, font: Option<&FontVec>) {
+#[allow(clippy::too_many_arguments)]
+pub fn magnifier(pm: &mut Pixmap, src: &Pixmap, cx: f32, cy: f32, sx: f32, sy: f32, s: f32, font: Option<&FontVec>) {
     const N: i32 = 15;
     let cell = (8.0 * s).round().max(4.0);
     let size = cell * N as f32;
@@ -422,7 +423,7 @@ pub fn magnifier(pm: &mut Pixmap, src: &Pixmap, cx: f32, cy: f32, s: f32, font: 
     if y + size + info_h > mh {
         y = cy - off - size - info_h;
     }
-    let (px, py) = (cx.floor() as i32, cy.floor() as i32);
+    let (px, py) = (sx.floor() as i32, sy.floor() as i32);
     let d = src.data();
     let (sw, sh) = (src.width() as i32, src.height() as i32);
     let mut center = [0u8; 3];

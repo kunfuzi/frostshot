@@ -449,6 +449,10 @@ impl App {
                     (MouseButton::Left, ElementState::Pressed) => s.on_left_press(mon, x, y),
                     (MouseButton::Left, ElementState::Released) => s.on_left_release(mon, x, y),
                     (MouseButton::Right, ElementState::Pressed) => s.on_right_press(),
+                    (MouseButton::Middle, st) => {
+                        s.on_middle(mon, st == ElementState::Pressed, x, y);
+                        Action::None
+                    }
                     _ => Action::None,
                 };
             }
@@ -458,7 +462,12 @@ impl App {
                     MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
                 if d != 0.0 {
-                    s.on_wheel(d);
+                    if s.mods.ctrl {
+                        let (x, y) = ov.wins[idx].pos;
+                        s.on_zoom(mon, d, x, y);
+                    } else {
+                        s.on_wheel(d);
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(m) => {
