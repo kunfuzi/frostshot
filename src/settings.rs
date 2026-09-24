@@ -38,6 +38,10 @@ pub enum Ctl {
     OpenConfig,
     Reset,
     Close,
+    ShellRegister,
+    ShellUnregister,
+    DefaultApps,
+    KeyboardSettings,
 }
 
 /// Побочные эффекты, которые применяет App.
@@ -54,6 +58,10 @@ pub struct Fx {
     pub open_config: bool,
     pub reset: bool,
     pub close: bool,
+    /// Записать (true) или убрать (false) Frostshot из обработчиков PrintScreen Windows.
+    pub shell_register: Option<bool>,
+    pub default_apps: bool,
+    pub keyboard_settings: bool,
 }
 
 pub struct Settings {
@@ -72,6 +80,7 @@ pub struct Settings {
     cursor: (f32, f32),
     font: Option<Arc<FontVec>>,
     sized: bool,
+    pub shell: crate::platform::ShellStatus,
 }
 
 const KEYS: [(&str, &str); 12] = [
@@ -140,11 +149,18 @@ impl Settings {
             cursor: (0.0, 0.0),
             font,
             sized: false,
+            shell: crate::platform::shell_status(),
         };
         s.present(cfg);
         s.window.set_visible(true);
         s.window.focus_window();
         Ok(s)
+    }
+
+    /// Перечитать состояние интеграции с Windows (пользователь мог поменять его в параметрах).
+    pub fn refresh_shell(&mut self) {
+        self.shell = crate::platform::shell_status();
+        self.window.request_redraw();
     }
 
     pub fn reload(&mut self, cfg: &Config) {
@@ -235,6 +251,10 @@ impl Settings {
             Some(Ctl::OpenConfig) => fx.open_config = true,
             Some(Ctl::Reset) => fx.reset = true,
             Some(Ctl::Close) => fx.close = true,
+            Some(Ctl::ShellRegister) => fx.shell_register = Some(true),
+            Some(Ctl::ShellUnregister) => fx.shell_register = Some(false),
+            Some(Ctl::DefaultApps) => fx.default_apps = true,
+            Some(Ctl::KeyboardSettings) => fx.keyboard_settings = true,
             None => {}
         }
         fx
@@ -522,6 +542,38 @@ impl Settings {
                 text(pm, &m, fx, y, small, ERR);
                 y += gap_line;
             }
+        }
+        // PrintScreen через Windows (ms-screenclip).
+        if self.shell.supported {
+            y += 4.0 * s;
+            text(pm, "PrintScreen через Windows", pad, y, body, FG);
+            y += gap_line + 2.0 * s;
+            let sh = &self.shell;
+            let name = match sh.handler.as_deref() {
+                Some(crate::platform::SCREENCLIP_PROGID) => "Frostshot".to_string(),
+                Some(p) => p.to_string(),
+                None => "Ножницы Windows".to_string(),
+            };
+            let (status, color) = if !sh.key_enabled {
+                ("Параметр Windows выключен: PrintScreen ловит хоткей Frostshot".to_string(), MUTED)
+            } else if sh.frostshot_is_handler() {
+                ("PrintScreen и Win+Shift+S открывают Frostshot".to_string(), ACCENT)
+            } else {
+                (format!("Сейчас PrintScreen открывает: {name}"), ERR)
+            };
+            text(pm, &status, pad, y, small, color);
+            y += gap_line;
+            let mut bx = pad;
+            if !sh.registered {
+                bx += button(pm, rects, Ctl::ShellRegister, bx, y, "Зарегистрировать Frostshot", false) + 8.0 * s;
+            } else {
+                if !sh.frostshot_is_handler() {
+                    bx += button(pm, rects, Ctl::DefaultApps, bx, y, "Выбрать Frostshot в Windows…", false) + 8.0 * s;
+                }
+                bx += button(pm, rects, Ctl::ShellUnregister, bx, y, "Убрать регистрацию", false) + 8.0 * s;
+            }
+            button(pm, rects, Ctl::KeyboardSettings, bx, y, "Параметр PrintScreen…", false);
+            y += row + 10.0 * s;
         }
         y += 6.0 * s;
         for (ctl, label, t) in [

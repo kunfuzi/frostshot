@@ -131,6 +131,27 @@ impl App {
                 let _ = proxy.send_event(UserEvent::DirChosen(path));
             });
         }
+        if let Some(on) = fx.shell_register {
+            match platform::shell_register(on) {
+                Ok(()) => {
+                    log::info!("shell integration {}", if on { "registered" } else { "removed" });
+                    // Выбор программы по умолчанию делает пользователь: Windows не даёт менять его из кода.
+                    if on {
+                        platform::open_default_apps();
+                    }
+                }
+                Err(e) => log::error!("shell integration: {e}"),
+            }
+            if let Some(st) = &mut self.settings {
+                st.refresh_shell();
+            }
+        }
+        if fx.default_apps {
+            platform::open_default_apps();
+        }
+        if fx.keyboard_settings {
+            platform::open_keyboard_settings();
+        }
         if fx.open_dir {
             platform::open_folder(&self.config.save_dir);
         }
@@ -187,6 +208,11 @@ impl App {
                 st.on_key(code, named, event.text.as_deref(), event.state == ElementState::Pressed, cfg)
             }
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => settings::Fx::default(),
+            // Вернулись из параметров Windows: обновить статус PrintScreen.
+            WindowEvent::Focused(true) => {
+                st.refresh_shell();
+                return;
+            }
             _ => return,
         };
         self.apply_fx(fx);

@@ -242,3 +242,287 @@ pub fn show_no_activate(window: &winit::window::Window) {
     }
     window.set_visible(true);
 }
+
+// ---------------------------------------------------------------------------
+// Связь между экземплярами: второй запуск (PrintScreen через Windows, двойной
+// клик по .frost) передаёт аргументы уже работающему Frostshot и выходит.
+// Windows: файл команды + именованное событие. Другие ОС пока без этого.
+// ---------------------------------------------------------------------------
+
+fn ipc_dir() -> Option<std::path::PathBuf> {
+    let d = directories::ProjectDirs::from("", "", "Frostshot")?.data_local_dir().join("ipc");
+    Some(if cfg!(debug_assertions) { d.join("dev") } else { d })
+}
+
+#[cfg(windows)]
+fn ipc_event_name() -> Vec<u16> {
+    let n = if cfg!(debug_assertions) { "Local\\Frostshot-dev-ipc-7c1e" } else { "Local\\Frostshot-ipc-7c1e" };
+    n.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Слушать команды второго экземпляра. on_cmd вызывается из фонового потока.
+pub fn ipc_listen(on_cmd: impl Fn(Vec<String>) + Send + 'static) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+        let Some(dir) = ipc_dir() else { return };
+        let _ = std::fs::create_dir_all(&dir);
+        // Команды, оставшиеся от прошлого запуска, не выполняем.
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        let name = ipc_event_name();
+        // SAFETY: имя завершено нулём; событие с автосбросом живёт до конца процесса.
+        let ev = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        if ev.is_null() {
+            log::warn!("ipc event not created");
+            return;
+        }
+        let ev = ev as usize;
+        std::thread::spawn(move || {
+            loop {
+                // SAFETY: хэндл события валиден до конца процесса.
+                unsafe { WaitForSingleObject(ev as windows_sys::Win32::Foundation::HANDLE, INFINITE) };
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                let mut files: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "cmd")).collect();
+                files.sort();
+                for f in files {
+                    if let Ok(text) = std::fs::read_to_string(&f) {
+                        let _ = std::fs::remove_file(&f);
+                        on_cmd(text.lines().map(str::to_string).collect());
+                    }
+                }
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = on_cmd;
+}
+
+/// Передать аргументы работающему экземпляру. false: передать не удалось.
+pub fn ipc_send(args: &[String]) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+        let Some(dir) = ipc_dir() else { return false };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return false;
+        }
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let file = dir.join(format!("{stamp}-{}.cmd", std::process::id()));
+        if std::fs::write(&file, args.join("\n")).is_err() {
+            return false;
+        }
+        let name = ipc_event_name();
+        // SAFETY: имя завершено нулём, хэндл закрываем.
+        unsafe {
+            let ev = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+            if ev.is_null() {
+                let _ = std::fs::remove_file(&file);
+                return false;
+            }
+            SetEvent(ev);
+            CloseHandle(ev);
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = args;
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Интеграция с Windows: Frostshot как обработчик ms-screenclip (PrintScreen и
+// Win+Shift+S при включённом параметре Windows) и открытие .frost двойным кликом.
+// Только HKCU, без прав администратора. Выбор программы по умолчанию делает
+// пользователь в «Приложениях по умолчанию»: Windows не даёт менять его из кода.
+// ---------------------------------------------------------------------------
+
+pub const SCREENCLIP_PROGID: &str = "Frostshot.ScreenClip";
+
+#[derive(Clone, Debug, Default)]
+pub struct ShellStatus {
+    /// Поддерживается ли интеграция на этой ОС.
+    pub supported: bool,
+    /// Frostshot записан в список обработчиков.
+    pub registered: bool,
+    /// ProgId, который Windows открывает по PrintScreen (None: Ножницы Windows).
+    pub handler: Option<String>,
+    /// Включён ли параметр Windows «PrintScreen открывает захват экрана».
+    pub key_enabled: bool,
+}
+
+impl ShellStatus {
+    pub fn frostshot_is_handler(&self) -> bool {
+        self.handler.as_deref() == Some(SCREENCLIP_PROGID)
+    }
+}
+
+#[cfg(windows)]
+mod winreg {
+    use windows_sys::Win32::System::Registry::*;
+
+    pub fn w(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn set_str(path: &str, name: Option<&str>, value: &str) -> Result<(), String> {
+        let mut key: HKEY = std::ptr::null_mut();
+        let p = w(path);
+        // SAFETY: строки завершены нулём, ключ закрывается.
+        unsafe {
+            let rc = RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                p.as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                std::ptr::null(),
+                &mut key,
+                std::ptr::null_mut(),
+            );
+            if rc != 0 {
+                return Err(format!("реестр {path}: код {rc}"));
+            }
+            let n = name.map(w);
+            let data = w(value);
+            let rc = RegSetValueExW(
+                key,
+                n.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+                0,
+                REG_SZ,
+                data.as_ptr().cast(),
+                (data.len() * 2) as u32,
+            );
+            RegCloseKey(key);
+            if rc != 0 {
+                return Err(format!("реестр {path}: код {rc}"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_str(root: HKEY, path: &str, name: Option<&str>) -> Option<String> {
+        let p = w(path);
+        let n = name.map(w);
+        let mut buf = vec![0u16; 1024];
+        let mut size = (buf.len() * 2) as u32;
+        // SAFETY: буфер size байт, строки завершены нулём.
+        let rc = unsafe {
+            RegGetValueW(
+                root,
+                p.as_ptr(),
+                n.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        if rc != 0 {
+            return None;
+        }
+        buf.truncate((size as usize / 2).saturating_sub(1));
+        Some(String::from_utf16_lossy(&buf))
+    }
+
+    pub fn delete_tree(path: &str) {
+        let p = w(path);
+        // SAFETY: строка завершена нулём. RegDeleteTreeW удаляет содержимое, затем сам ключ.
+        unsafe {
+            RegDeleteTreeW(HKEY_CURRENT_USER, p.as_ptr());
+            RegDeleteKeyW(HKEY_CURRENT_USER, p.as_ptr());
+        }
+    }
+
+    pub fn delete_value(path: &str, name: &str) {
+        let (p, n) = (w(path), w(name));
+        // SAFETY: строки завершены нулём.
+        unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, p.as_ptr(), n.as_ptr()) };
+    }
+}
+
+pub fn shell_status() -> ShellStatus {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
+        let registered = winreg::get_str(HKEY_CURRENT_USER, "Software\\RegisteredApplications", Some("Frostshot")).is_some();
+        let handler = winreg::get_str(
+            HKEY_CURRENT_USER,
+            "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\ms-screenclip\\UserChoice",
+            Some("ProgId"),
+        );
+        ShellStatus { supported: true, registered, handler, key_enabled: printscreen_taken_by_system() }
+    }
+    #[cfg(not(windows))]
+    {
+        ShellStatus::default()
+    }
+}
+
+/// Записать или убрать Frostshot из обработчиков ms-screenclip и .frost.
+pub fn shell_register(on: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = exe.to_string_lossy().to_string();
+        let icon = format!("\"{exe}\",0");
+        if on {
+            let c = "Software\\Classes";
+            let clip = format!("{c}\\{SCREENCLIP_PROGID}");
+            winreg::set_str(&clip, None, "Frostshot: снимок экрана")?;
+            winreg::set_str(&format!("{clip}\\Application"), Some("ApplicationName"), "Frostshot")?;
+            winreg::set_str(&format!("{clip}\\Application"), Some("ApplicationIcon"), &icon)?;
+            winreg::set_str(&format!("{clip}\\DefaultIcon"), None, &icon)?;
+            winreg::set_str(&format!("{clip}\\shell\\open\\command"), None, &format!("\"{exe}\" --capture \"%1\""))?;
+            let proj = format!("{c}\\Frostshot.Project");
+            winreg::set_str(&proj, None, "Проект Frostshot")?;
+            winreg::set_str(&format!("{proj}\\DefaultIcon"), None, &icon)?;
+            winreg::set_str(&format!("{proj}\\shell\\open\\command"), None, &format!("\"{exe}\" \"%1\""))?;
+            winreg::set_str(&format!("{c}\\.frost"), None, "Frostshot.Project")?;
+            let cap = "Software\\Frostshot\\Capabilities";
+            winreg::set_str(cap, Some("ApplicationName"), "Frostshot")?;
+            winreg::set_str(cap, Some("ApplicationDescription"), "Скриншоты с разметкой")?;
+            winreg::set_str(&format!("{cap}\\URLAssociations"), Some("ms-screenclip"), SCREENCLIP_PROGID)?;
+            winreg::set_str(&format!("{cap}\\FileAssociations"), Some(".frost"), "Frostshot.Project")?;
+            winreg::set_str("Software\\RegisteredApplications", Some("Frostshot"), cap)?;
+        } else {
+            winreg::delete_value("Software\\RegisteredApplications", "Frostshot");
+            winreg::delete_tree("Software\\Frostshot");
+            winreg::delete_tree(&format!("Software\\Classes\\{SCREENCLIP_PROGID}"));
+            winreg::delete_tree("Software\\Classes\\Frostshot.Project");
+            winreg::delete_tree("Software\\Classes\\.frost");
+        }
+        use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+        // SAFETY: уведомление оболочки без параметров.
+        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = on;
+        Err("только Windows".into())
+    }
+}
+
+/// Открыть в Windows страницу выбора программ по умолчанию для Frostshot.
+pub fn open_default_apps() {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd").args(["/C", "start", "", "ms-settings:defaultapps?registeredAppUser=Frostshot"]).spawn();
+    }
+}
+
+/// Открыть в Windows параметры клавиатуры (переключатель PrintScreen).
+pub fn open_keyboard_settings() {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd").args(["/C", "start", "", "ms-settings:easeofaccess-keyboard"]).spawn();
+    }
+}

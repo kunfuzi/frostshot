@@ -50,6 +50,8 @@ enum UserEvent {
     SaveChosen(Option<PathBuf>),
     DirChosen(Option<PathBuf>),
     ProjectChosen(Option<PathBuf>),
+    /// Аргументы от второго экземпляра (PrintScreen через Windows, двойной клик по .frost).
+    Remote(Vec<String>),
 }
 
 struct OverlayWin {
@@ -109,6 +111,13 @@ impl App {
         }
         self.clipboard = arboard::Clipboard::new().map_err(|e| log::warn!("clipboard: {e}")).ok();
 
+        // Регистрация в Windows указывает на путь exe: после переноса программы обновляем её.
+        if platform::shell_status().registered {
+            if let Err(e) = platform::shell_register(true) {
+                log::warn!("shell integration refresh: {e}");
+            }
+        }
+
         if self.config.hotkey.eq_ignore_ascii_case("PrintScreen")
             && platform::printscreen_taken_by_system()
             && !self.config.printscreen_warned
@@ -129,6 +138,19 @@ impl App {
                     .set_level(rfd::MessageLevel::Info)
                     .show();
             });
+        }
+    }
+
+    /// Команды из командной строки или от второго экземпляра.
+    fn handle_args(&mut self, el: &ActiveEventLoop, args: &[String]) {
+        log::info!("args: {args:?}");
+        if args.iter().any(|a| a == "--settings") {
+            self.open_settings(el);
+        }
+        if let Some(p) = args.iter().find(|a| a.to_lowercase().ends_with(".frost")) {
+            self.open_project(el, std::path::Path::new(p));
+        } else if args.iter().any(|a| a == "--capture" || a.to_lowercase().starts_with("ms-screenclip:")) {
+            self.start_capture(el);
         }
     }
 
@@ -171,12 +193,7 @@ impl ApplicationHandler<UserEvent> for App {
             let args: Vec<String> = std::env::args().skip(1).collect();
             self.guarded(|app| {
                 app.init();
-                if args.iter().any(|a| a == "--settings") {
-                    app.open_settings(el);
-                }
-                if let Some(p) = args.iter().find(|a| a.to_lowercase().ends_with(".frost")) {
-                    app.open_project(el, std::path::Path::new(p));
-                }
+                app.handle_args(el, &args);
             });
         }
     }
@@ -225,6 +242,7 @@ impl ApplicationHandler<UserEvent> for App {
                     st.window.request_redraw();
                 }
             }
+            UserEvent::Remote(args) => app.handle_args(el, &args),
             UserEvent::ProjectChosen(p) => {
                 if let Some(p) = p {
                     app.open_project(el, &p);
@@ -302,7 +320,13 @@ fn main() {
     let instance_name = if cfg!(debug_assertions) { "frostshot-dev-instance-7c1e" } else { "frostshot-single-instance-7c1e" };
     let instance = single_instance::SingleInstance::new(instance_name).ok();
     if instance.as_ref().is_some_and(|i| !i.is_single()) {
-        log::info!("already running");
+        // Уже запущен: передаём ему команду (пустой запуск открывает настройки).
+        let mut fwd: Vec<String> = args[1..].to_vec();
+        if fwd.is_empty() {
+            fwd.push("--settings".into());
+        }
+        let sent = platform::ipc_send(&fwd);
+        log::info!("already running, forwarded {fwd:?}: {sent}");
         return;
     }
 
@@ -327,6 +351,13 @@ fn main() {
         MenuEvent::set_event_handler(Some(move |e| {
             let _ = p.send_event(UserEvent::Menu(e));
         }));
+    }
+
+    {
+        let p = proxy.clone();
+        platform::ipc_listen(move |args| {
+            let _ = p.send_event(UserEvent::Remote(args));
+        });
     }
 
     let config = Config::load();
