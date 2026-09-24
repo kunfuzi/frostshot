@@ -16,8 +16,9 @@ pub struct Tray {
     pub quit_id: MenuId,
 }
 
-/// Иконка: курсор выделяет область (два уголка кропа), рядом три осколка льда.
-/// Рисуется в сетке 128x128 и масштабируется; в мелких размерах уголки толще.
+/// Иконка: большая стрелка-курсор по диагонали из угла в угол (остриё слева вверху),
+/// в двух других углах уголки рамки выделения. Половина стрелки голубее, как грань льда.
+/// Рисуется в сетке 128x128 и масштабируется; в мелких размерах линии толще.
 pub fn icon_pixmap(size: u32) -> Pixmap {
     use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Point, SpreadMode, Transform};
     let mut pm = Pixmap::new(size, size).unwrap();
@@ -55,10 +56,10 @@ pub fn icon_pixmap(size: u32) -> Pixmap {
         pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
     }
 
-    // Два уголка кропа по диагонали.
+    // Уголки рамки: справа вверху и слева внизу.
     let corner = [0xd8, 0xf0, 0xff];
-    let w = if small { 12.0 } else { 9.5 } * k;
-    for pts in [[(24.0, 52.0), (24.0, 24.0), (50.0, 24.0)], [(104.0, 78.0), (104.0, 104.0), (78.0, 104.0)]] {
+    let w = if small { 13.0 } else { 10.0 } * k;
+    for pts in [[(76.0, 24.0), (104.0, 24.0), (104.0, 52.0)], [(24.0, 76.0), (24.0, 104.0), (52.0, 104.0)]] {
         let mut pb = PathBuilder::new();
         let a = p(pts[0].0, pts[0].1);
         pb.move_to(a.0, a.1);
@@ -71,29 +72,15 @@ pub fn icon_pixmap(size: u32) -> Pixmap {
         }
     }
 
-    // Три осколка льда справа от острия: вытянутые ромбы из светлой и тёмной половин.
-    let shard = |pm: &mut Pixmap, base: (f32, f32), tip: (f32, f32), width: f32| {
-        let (dx, dy) = (tip.0 - base.0, tip.1 - base.1);
-        let len = (dx * dx + dy * dy).sqrt();
-        let (nx, ny) = (-dy / len * width / 2.0, dx / len * width / 2.0);
-        let mid = (base.0 + dx * 0.42, base.1 + dy * 0.42);
-        let (b, t) = (p(base.0, base.1), p(tip.0, tip.1));
-        let l = p(mid.0 + nx, mid.1 + ny);
-        let r = p(mid.0 - nx, mid.1 - ny);
-        fill(pm, &[b, l, t], [0xa8, 0xe6, 0xff]);
-        fill(pm, &[b, r, t], [0x4f, 0xc2, 0xf6]);
-    };
-    shard(&mut pm, (60.0, 46.0), (82.0, 16.0), 12.0);
-    shard(&mut pm, (66.0, 56.0), (98.0, 40.0), 10.0);
-    shard(&mut pm, (54.0, 40.0), (58.0, 26.0), 7.0);
-
-    // Курсор: классический указатель Windows, остриё слева вверху; правая половина
-    // чуть голубее, как грань льда.
-    let (ax, ay, sc) = (38.0, 36.0, 2.3);
-    let a = |x: f32, y: f32| p(ax + x * sc, ay + y * sc);
-    let arrow = [a(0.0, 0.0), a(0.0, 24.0), a(6.0, 18.5), a(10.0, 27.5), a(14.0, 25.5), a(10.2, 17.0), a(17.0, 17.0)];
-    fill(&mut pm, &arrow, [0xff, 0xff, 0xff]);
-    fill(&mut pm, &[a(0.0, 0.0), a(17.0, 17.0), a(10.2, 17.0), a(6.0, 18.5)], [0xdd, 0xf0, 0xff]);
+    // Стрелка вдоль диагонали: координаты (вдоль оси от острия, поперёк оси).
+    let tip = (22.0f32, 22.0f32);
+    let r2 = std::f32::consts::FRAC_1_SQRT_2;
+    let at = |along: f32, across: f32| p(tip.0 + (along + across) * r2, tip.1 + (along - across) * r2);
+    let (head, wing, shaft, end) = (38.0, 22.0, if small { 9.0 } else { 7.5 }, 104.0);
+    let right = [at(0.0, 0.0), at(head, wing), at(head - 8.0, shaft), at(end, shaft), at(end, 0.0)];
+    let left = [at(0.0, 0.0), at(end, 0.0), at(end, -shaft), at(head - 8.0, -shaft), at(head, -wing)];
+    fill(&mut pm, &right, [0xc6, 0xe8, 0xff]);
+    fill(&mut pm, &left, [0xff, 0xff, 0xff]);
     pm
 }
 
