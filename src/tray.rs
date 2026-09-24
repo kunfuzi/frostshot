@@ -16,8 +16,8 @@ pub struct Tray {
     pub quit_id: MenuId,
 }
 
-/// Иконка: большая стрелка-курсор по диагонали из угла в угол (остриё слева вверху),
-/// в двух других углах уголки рамки выделения. Половина стрелки голубее, как грань льда.
+/// Иконка: крупный курсор мыши по диагонали (остриё слева вверху), в двух других
+/// углах уголки рамки выделения. Половина курсора голубее, как грань льда.
 /// Рисуется в сетке 128x128 и масштабируется; в мелких размерах линии толще.
 pub fn icon_pixmap(size: u32) -> Pixmap {
     use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Point, SpreadMode, Transform};
@@ -72,15 +72,15 @@ pub fn icon_pixmap(size: u32) -> Pixmap {
         }
     }
 
-    // Стрелка вдоль диагонали: координаты (вдоль оси от острия, поперёк оси).
-    let tip = (22.0f32, 22.0f32);
-    let r2 = std::f32::consts::FRAC_1_SQRT_2;
-    let at = |along: f32, across: f32| p(tip.0 + (along + across) * r2, tip.1 + (along - across) * r2);
-    let (head, wing, shaft, end) = (38.0, 22.0, if small { 9.0 } else { 7.5 }, 104.0);
-    let right = [at(0.0, 0.0), at(head, wing), at(head - 8.0, shaft), at(end, shaft), at(end, 0.0)];
-    let left = [at(0.0, 0.0), at(end, 0.0), at(end, -shaft), at(head - 8.0, -shaft), at(head, -wing)];
-    fill(&mut pm, &right, [0xc6, 0xe8, 0xff]);
-    fill(&mut pm, &left, [0xff, 0xff, 0xff]);
+    // Курсор мыши по диагонали: классический указатель, повёрнутый так, что его ось
+    // (от острия к середине хвоста) идёт под 45°. Правая половина голубее, как грань льда.
+    let (tx, ty, sc) = (24.0f32, 20.0f32, 3.0f32);
+    let th = (26.5f32.atan2(12.0) - std::f32::consts::FRAC_PI_4).to_degrees().to_radians() * -1.0;
+    let (sn, cs) = (th.sin(), th.cos());
+    let c = |x: f32, y: f32| p(tx + (x * cs - y * sn) * sc, ty + (x * sn + y * cs) * sc);
+    let cursor = [c(0.0, 0.0), c(0.0, 24.0), c(6.0, 18.5), c(10.0, 27.5), c(14.0, 25.5), c(10.2, 17.0), c(17.0, 17.0)];
+    fill(&mut pm, &cursor, [0xff, 0xff, 0xff]);
+    fill(&mut pm, &[c(0.0, 0.0), c(17.0, 17.0), c(10.2, 17.0), c(14.0, 25.5), c(12.0, 26.5)], [0xc6, 0xe8, 0xff]);
     pm
 }
 
