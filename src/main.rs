@@ -8,9 +8,11 @@ mod platform;
 mod selection;
 mod selftest;
 mod session;
+mod settings;
 mod shapes;
 mod tray;
 mod ui;
+mod upload;
 
 use ab_glyph::FontVec;
 use config::Config;
@@ -38,6 +40,7 @@ enum UserEvent {
     Tray(TrayIconEvent),
     Menu(MenuEvent),
     SaveChosen(Option<PathBuf>),
+    DirChosen(Option<PathBuf>),
 }
 
 struct OverlayWin {
@@ -57,6 +60,8 @@ struct App {
     proxy: EventLoopProxy<UserEvent>,
     hotkeys: Option<GlobalHotKeyManager>,
     hotkey_ids: Vec<u32>,
+    registered: Vec<HotKey>,
+    settings: Option<settings::Settings>,
     tray: Option<tray::Tray>,
     overlay: Option<Overlay>,
     pending_save: Option<Pixmap>,
@@ -67,34 +72,21 @@ struct App {
 
 impl App {
     fn init(&mut self) {
-        // Хоткеи: основной и запасной.
-        let mut label = String::new();
         match GlobalHotKeyManager::new() {
-            Ok(mgr) => {
-                for s in [self.config.hotkey.clone(), self.config.fallback_hotkey.clone()] {
-                    match s.parse::<HotKey>() {
-                        Ok(hk) => match mgr.register(hk) {
-                            Ok(()) => {
-                                self.hotkey_ids.push(hk.id());
-                                if label.is_empty() {
-                                    label = s.clone();
-                                }
-                                log::info!("hotkey registered: {s}");
-                            }
-                            Err(e) => log::warn!("hotkey {s} not registered: {e}"),
-                        },
-                        Err(e) => log::warn!("hotkey {s} parse error: {e}"),
-                    }
-                }
-                self.hotkeys = Some(mgr);
-            }
+            Ok(mgr) => self.hotkeys = Some(mgr),
             Err(e) => log::error!("hotkey manager: {e}"),
         }
-        if label.is_empty() {
-            label = "клик по иконке".into();
+        let (label, _) = self.register_hotkeys();
+
+        // Автозапуск: реальное состояние главнее конфига; путь обновляем на текущий exe.
+        self.config.autostart = platform::autostart_enabled();
+        if self.config.autostart {
+            if let Err(e) = platform::set_autostart(true) {
+                log::warn!("autostart refresh: {e}");
+            }
         }
 
-        match tray::build(&label) {
+        match tray::Tray::build(&label, self.config.autostart) {
             Ok(t) => self.tray = Some(t),
             Err(e) => log::error!("tray: {e}"),
         }
@@ -121,6 +113,195 @@ impl App {
                     .show();
             });
         }
+    }
+
+    /// (Пере)регистрация хоткеев из конфига. Возвращает подпись для меню и ошибки по полям.
+    fn register_hotkeys(&mut self) -> (String, [Option<String>; 2]) {
+        let mut errs: [Option<String>; 2] = [None, None];
+        let mut label = String::new();
+        self.hotkey_ids.clear();
+        if let Some(mgr) = &self.hotkeys {
+            if !self.registered.is_empty() {
+                let _ = mgr.unregister_all(&self.registered);
+                self.registered.clear();
+            }
+            for (i, s) in [self.config.hotkey.clone(), self.config.fallback_hotkey.clone()].into_iter().enumerate() {
+                if s.is_empty() {
+                    continue;
+                }
+                match s.parse::<HotKey>() {
+                    Ok(hk) => match mgr.register(hk) {
+                        Ok(()) => {
+                            self.hotkey_ids.push(hk.id());
+                            self.registered.push(hk);
+                            if label.is_empty() {
+                                label = s.clone();
+                            }
+                            log::info!("hotkey registered: {s}");
+                        }
+                        Err(e) => {
+                            log::warn!("hotkey {s} not registered: {e}");
+                            errs[i] = Some("Занято другой программой".into());
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!("hotkey {s} parse error: {e}");
+                        errs[i] = Some("Неверное сочетание".into());
+                    }
+                }
+            }
+        }
+        if label.is_empty() {
+            label = "клик по иконке".into();
+        }
+        if let Some(t) = &self.tray {
+            t.set_hotkey_label(&label);
+        }
+        if let Some(st) = &mut self.settings {
+            st.hotkey_err = errs.clone();
+        }
+        (label, errs)
+    }
+
+    fn unregister_hotkeys(&mut self) {
+        if let Some(mgr) = &self.hotkeys {
+            let _ = mgr.unregister_all(&self.registered);
+        }
+        self.registered.clear();
+        self.hotkey_ids.clear();
+    }
+
+    fn open_settings(&mut self, el: &ActiveEventLoop) {
+        if let Some(st) = &self.settings {
+            st.window.set_minimized(false);
+            st.window.focus_window();
+            return;
+        }
+        match settings::Settings::open(el, self.font.clone(), &self.config) {
+            Ok(st) => {
+                self.settings = Some(st);
+                self.register_hotkeys();
+                if let Some(st) = &self.settings {
+                    st.window.request_redraw();
+                }
+            }
+            Err(e) => log::error!("settings window: {e}"),
+        }
+    }
+
+    fn set_autostart(&mut self, on: bool) {
+        match platform::set_autostart(on) {
+            Ok(()) => self.config.autostart = on,
+            Err(e) => {
+                log::error!("autostart: {e}");
+                self.config.autostart = platform::autostart_enabled();
+            }
+        }
+        self.config.save();
+        if let Some(t) = &self.tray {
+            t.set_autostart(self.config.autostart);
+        }
+    }
+
+    fn apply_fx(&mut self, fx: settings::Fx) {
+        if fx.reset {
+            let warned = self.config.printscreen_warned;
+            self.config = Config::default();
+            self.config.printscreen_warned = warned;
+            self.set_autostart(false);
+            ui::set_font_size(self.config.ui_font_size);
+            self.register_hotkeys();
+            if let Some(st) = &mut self.settings {
+                st.reload(&self.config);
+            }
+            self.config.save();
+        }
+        if let Some(on) = fx.autostart {
+            self.set_autostart(on);
+        }
+        match fx.record {
+            Some(true) => self.unregister_hotkeys(),
+            Some(false) if !fx.hotkeys => {
+                self.register_hotkeys();
+            }
+            _ => {}
+        }
+        if fx.hotkeys {
+            self.register_hotkeys();
+        }
+        if fx.font {
+            ui::set_font_size(self.config.ui_font_size);
+        }
+        if fx.save {
+            self.config.save();
+        }
+        if fx.choose_dir {
+            let dir = self.config.save_dir.clone();
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                let path = rfd::FileDialog::new().set_title("Папка для снимков").set_directory(&dir).pick_folder();
+                let _ = proxy.send_event(UserEvent::DirChosen(path));
+            });
+        }
+        if fx.open_dir {
+            platform::open_folder(&self.config.save_dir);
+        }
+        if fx.open_config {
+            self.config.save();
+            if let Some(p) = config::config_path() {
+                platform::open_file(&p);
+            }
+        }
+        if fx.close {
+            if self.settings.as_ref().is_some_and(|s| s.recording.is_some()) {
+                self.settings = None;
+                self.register_hotkeys();
+            }
+            self.settings = None;
+        }
+        if let Some(st) = &self.settings {
+            st.window.request_redraw();
+        }
+    }
+
+    fn handle_settings_event(&mut self, event: WindowEvent) {
+        let Some(st) = &mut self.settings else { return };
+        let cfg = &mut self.config;
+        let fx = match event {
+            WindowEvent::RedrawRequested => {
+                st.present(cfg);
+                return;
+            }
+            WindowEvent::CloseRequested => settings::Fx { close: true, ..Default::default() },
+            WindowEvent::CursorMoved { position, .. } => {
+                let fx = st.on_move(position.x as f32, position.y as f32, cfg);
+                st.window.set_cursor(st.cursor_icon());
+                fx
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {
+                ElementState::Pressed => st.on_press(cfg),
+                ElementState::Released => st.on_release(),
+            },
+            WindowEvent::ModifiersChanged(m) => {
+                let s = m.state();
+                st.mods = session::Mods { shift: s.shift_key(), ctrl: s.control_key(), alt: s.alt_key() };
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let code = match event.physical_key {
+                    PhysicalKey::Code(c) => Some(c),
+                    _ => None,
+                };
+                let named = match &event.logical_key {
+                    Key::Named(n) => Some(*n),
+                    _ => None,
+                };
+                st.on_key(code, named, event.text.as_deref(), event.state == ElementState::Pressed, cfg)
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => settings::Fx::default(),
+            _ => return,
+        };
+        self.apply_fx(fx);
     }
 
     fn start_capture(&mut self, el: &ActiveEventLoop) {
@@ -180,7 +361,7 @@ impl App {
                 .position(|s| s.contains_global(gx, gy))
                 .map(|i| (i, (gx - shots[i].x) as f32, (gy - shots[i].y) as f32))
         });
-        let mut session = Session::new(shots, scales, self.config.color, self.config.width, self.font.clone());
+        let mut session = Session::new(shots, scales, self.config.dim, self.config.color, self.config.width, self.font.clone());
         if let Some((m, x, y)) = cursor {
             session.on_move(m, x, y);
             if let Some(w) = wins.iter_mut().find(|w| w.mon == m) {
@@ -226,11 +407,18 @@ impl App {
                     Some(Err(e)) => log::error!("clipboard: {e}"),
                     None => log::error!("clipboard unavailable"),
                 }
+                if self.config.save_on_copy {
+                    let path = self.config.save_dir.join(output::default_file_name(&self.config.file_template));
+                    match output::save_png(&img, &path) {
+                        Ok(p) => log::info!("saved {}", p.display()),
+                        Err(e) => log::error!("save: {e}"),
+                    }
+                }
                 self.close_overlay();
             }
             Action::QuickSave => {
                 let Some(img) = self.overlay.as_mut().and_then(|o| o.session.result()) else { return };
-                let path = self.config.save_dir.join(output::default_file_name());
+                let path = self.config.save_dir.join(output::default_file_name(&self.config.file_template));
                 match output::save_png(&img, &path) {
                     Ok(p) => log::info!("saved {}", p.display()),
                     Err(e) => log::error!("save: {e}"),
@@ -249,11 +437,12 @@ impl App {
                 let dir = self.config.save_dir.clone();
                 let _ = std::fs::create_dir_all(&dir);
                 let proxy = self.proxy.clone();
+                let name = output::default_file_name(&self.config.file_template);
                 std::thread::spawn(move || {
                     let path = rfd::FileDialog::new()
                         .set_title("Сохранить скриншот")
                         .set_directory(&dir)
-                        .set_file_name(output::default_file_name())
+                        .set_file_name(name)
                         .add_filter("PNG", &["png"])
                         .save_file();
                     let _ = proxy.send_event(UserEvent::SaveChosen(path));
@@ -294,6 +483,10 @@ impl App {
     }
 
     fn handle_window_event(&mut self, id: WindowId, event: WindowEvent) {
+        if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
+            self.handle_settings_event(event);
+            return;
+        }
         let Some(ov) = &mut self.overlay else { return };
         let Some(idx) = ov.wins.iter().position(|w| w.window.id() == id) else { return };
         let mon = ov.wins[idx].mon;
@@ -442,7 +635,13 @@ impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _el: &ActiveEventLoop) {
         if !self.started {
             self.started = true;
-            self.guarded(|app| app.init());
+            let open_settings = std::env::args().any(|a| a == "--settings");
+            self.guarded(|app| {
+                app.init();
+                if open_settings {
+                    app.open_settings(_el);
+                }
+            });
         }
     }
 
@@ -463,12 +662,29 @@ impl ApplicationHandler<UserEvent> for App {
                     app.start_capture(el);
                 } else if e.id == t.folder_id {
                     platform::open_folder(&app.config.save_dir);
+                } else if e.id == t.settings_id {
+                    app.open_settings(el);
+                } else if e.id == t.autostart_id {
+                    let on = !app.config.autostart;
+                    app.set_autostart(on);
+                    if let Some(st) = &app.settings {
+                        st.window.request_redraw();
+                    }
                 } else if e.id == t.quit_id {
                     app.close_overlay();
                     el.exit();
                 }
             }
             UserEvent::SaveChosen(p) => app.on_save_chosen(p),
+            UserEvent::DirChosen(p) => {
+                if let Some(p) = p {
+                    app.config.save_dir = p;
+                    app.config.save();
+                }
+                if let Some(st) = &app.settings {
+                    st.window.request_redraw();
+                }
+            }
         });
     }
 
@@ -477,15 +693,47 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// Лог: в release в файл (с ротацией на 1 МБ), в debug в stderr. Паники тоже в лог.
+fn init_logging() {
+    let mut b = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    if !cfg!(debug_assertions) {
+        if let Some(path) = platform::log_path() {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1024 * 1024) {
+                let _ = std::fs::rename(&path, path.with_extension("old.log"));
+            }
+            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                b.target(env_logger::Target::Pipe(Box::new(f)));
+            }
+        }
+    }
+    b.init();
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
+    }));
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--selftest") {
         let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("selftest-out"));
         std::process::exit(selftest::run(&dir));
     }
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    if args.get(1).map(String::as_str) == Some("--write-icon") {
+        let path = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("assets/frostshot.ico"));
+        match tray::write_ico(&path) {
+            Ok(()) => println!("written {}", path.display()),
+            Err(e) => eprintln!("write icon: {e}"),
+        }
+        return;
+    }
+    init_logging();
 
-    let instance = single_instance::SingleInstance::new("frostshot-single-instance-7c1e").ok();
+    // Debug-сборка не конфликтует с установленной release-версией.
+    let instance_name = if cfg!(debug_assertions) { "frostshot-dev-instance-7c1e" } else { "frostshot-single-instance-7c1e" };
+    let instance = single_instance::SingleInstance::new(instance_name).ok();
     if instance.as_ref().is_some_and(|i| !i.is_single()) {
         log::info!("already running");
         return;
@@ -521,6 +769,8 @@ fn main() {
         proxy,
         hotkeys: None,
         hotkey_ids: Vec::new(),
+        registered: Vec::new(),
+        settings: None,
         tray: None,
         overlay: None,
         pending_save: None,

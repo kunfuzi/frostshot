@@ -98,15 +98,16 @@ fn square(a: Pt, b: Pt) -> Pt {
 }
 
 impl Session {
-    pub fn new(shots: Vec<MonitorShot>, scales: Vec<f32>, color: u32, width: f32, font: Option<Arc<FontVec>>) -> Self {
+    pub fn new(shots: Vec<MonitorShot>, scales: Vec<f32>, dim: f32, color: u32, width: f32, font: Option<Arc<FontVec>>) -> Self {
+        let keep = ((1.0 - dim.clamp(0.0, 0.9)) * 256.0) as u32;
         let dimmed: Vec<Pixmap> = shots
             .iter()
             .map(|s| {
                 let mut p = s.pixmap.clone();
                 for px in p.data_mut().chunks_exact_mut(4) {
-                    px[0] >>= 1;
-                    px[1] >>= 1;
-                    px[2] >>= 1;
+                    px[0] = ((px[0] as u32 * keep) >> 8) as u8;
+                    px[1] = ((px[1] as u32 * keep) >> 8) as u8;
+                    px[2] = ((px[2] as u32 * keep) >> 8) as u8;
                 }
                 p
             })

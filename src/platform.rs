@@ -133,3 +133,49 @@ pub fn font_candidates() -> &'static [&'static str] {
         ]
     }
 }
+
+fn auto_launch() -> Result<auto_launch::AutoLaunch, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut b = auto_launch::AutoLaunchBuilder::new();
+    b.set_app_name("Frostshot").set_app_path(&exe.to_string_lossy());
+    #[cfg(windows)]
+    b.set_windows_enable_mode(auto_launch::WindowsEnableMode::CurrentUser);
+    #[cfg(target_os = "macos")]
+    b.set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent);
+    b.build().map_err(|e| e.to_string())
+}
+
+/// Включить или выключить запуск при входе в систему (без прав администратора).
+/// Включение всегда перезаписывает путь на текущий exe.
+pub fn set_autostart(on: bool) -> Result<(), String> {
+    let al = auto_launch()?;
+    if on {
+        al.enable().map_err(|e| e.to_string())
+    } else if al.is_enabled().unwrap_or(false) {
+        al.disable().map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn autostart_enabled() -> bool {
+    auto_launch().and_then(|a| a.is_enabled().map_err(|e| e.to_string())).unwrap_or(false)
+}
+
+/// Открыть файл в приложении по умолчанию.
+pub fn open_file(path: &Path) {
+    #[cfg(windows)]
+    let r = std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(path).spawn();
+    if let Err(e) = r {
+        log::warn!("open file failed: {e}");
+    }
+}
+
+/// Файл лога рядом с данными приложения.
+pub fn log_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("", "", "Frostshot").map(|d| d.data_local_dir().join("frostshot.log"))
+}

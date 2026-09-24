@@ -53,7 +53,7 @@ pub fn run(dir: &Path) -> i32 {
     let font = draw::load_font().map(Arc::new);
     c.ok("system font loaded", font.is_some());
     let n = shots.len();
-    let mut s = Session::new(shots, vec![1.0; n], 0xE24B4A, 4.0, font);
+    let mut s = Session::new(shots, vec![1.0; n], 0.5, 0xE24B4A, 4.0, font);
 
     // 1. Клик без протяжки = весь монитор.
     s.on_left_press(0, 300.0, 300.0);

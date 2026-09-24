@@ -1,11 +1,15 @@
 use tiny_skia::{Pixmap, Rect};
-use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
-    _icon: TrayIcon,
+    icon: TrayIcon,
+    capture: MenuItem,
+    autostart: CheckMenuItem,
     pub capture_id: MenuId,
     pub folder_id: MenuId,
+    pub settings_id: MenuId,
+    pub autostart_id: MenuId,
     pub quit_id: MenuId,
 }
 
@@ -42,27 +46,85 @@ pub fn rgba_straight(pm: &Pixmap) -> Vec<u8> {
     out
 }
 
-pub fn build(hotkey_label: &str) -> Result<Tray, String> {
-    let capture = MenuItem::new(format!("Сделать скриншот ({hotkey_label})"), true, None);
-    let folder = MenuItem::new("Открыть папку со снимками", true, None);
-    let quit = MenuItem::new("Выход", true, None);
-    let menu = Menu::new();
-    menu.append_items(&[&capture, &folder, &PredefinedMenuItem::separator(), &quit])
+/// ICO из PNG-кадров 16..256 для ресурса exe (`frostshot --write-icon assets/frostshot.ico`).
+pub fn write_ico(path: &std::path::Path) -> Result<(), String> {
+    let sizes = [16u32, 24, 32, 48, 64, 128, 256];
+    let pngs: Vec<Vec<u8>> = sizes
+        .iter()
+        .map(|&s| icon_pixmap(s).encode_png().map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * sizes.len() as u32;
+    for (s, png) in sizes.iter().zip(&pngs) {
+        let b = if *s >= 256 { 0 } else { *s as u8 };
+        out.extend_from_slice(&[b, b, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    for png in &pngs {
+        out.extend_from_slice(png);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())
+}
+
+fn capture_label(hotkey: &str) -> String {
+    format!("Сделать скриншот ({hotkey})")
+}
+
+impl Tray {
+    pub fn build(hotkey_label: &str, autostart: bool) -> Result<Tray, String> {
+        let capture = MenuItem::new(capture_label(hotkey_label), true, None);
+        let folder = MenuItem::new("Открыть папку со снимками", true, None);
+        let settings = MenuItem::new("Настройки…", true, None);
+        let auto = CheckMenuItem::new("Запускать при входе в систему", true, autostart, None);
+        let quit = MenuItem::new("Выход", true, None);
+        let menu = Menu::new();
+        menu.append_items(&[
+            &capture,
+            &folder,
+            &PredefinedMenuItem::separator(),
+            &settings,
+            &auto,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])
         .map_err(|e| e.to_string())?;
 
-    let pm = icon_pixmap(32);
-    let icon = Icon::from_rgba(rgba_straight(&pm), 32, 32).map_err(|e| e.to_string())?;
-    let tray = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_menu_on_left_click(false)
-        .with_tooltip(format!("Frostshot: {hotkey_label}"))
-        .with_icon(icon)
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(Tray {
-        _icon: tray,
-        capture_id: capture.id().clone(),
-        folder_id: folder.id().clone(),
-        quit_id: quit.id().clone(),
-    })
+        let pm = icon_pixmap(32);
+        let icon = Icon::from_rgba(rgba_straight(&pm), 32, 32).map_err(|e| e.to_string())?;
+        let tray = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_tooltip(format!("Frostshot: {hotkey_label}"))
+            .with_icon(icon)
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Tray {
+            icon: tray,
+            capture_id: capture.id().clone(),
+            folder_id: folder.id().clone(),
+            settings_id: settings.id().clone(),
+            autostart_id: auto.id().clone(),
+            quit_id: quit.id().clone(),
+            capture,
+            autostart: auto,
+        })
+    }
+
+    pub fn set_hotkey_label(&self, hotkey_label: &str) {
+        self.capture.set_text(capture_label(hotkey_label));
+        let _ = self.icon.set_tooltip(Some(format!("Frostshot: {hotkey_label}")));
+    }
+
+    pub fn set_autostart(&self, on: bool) {
+        self.autostart.set_checked(on);
+    }
 }

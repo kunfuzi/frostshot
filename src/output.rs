@@ -14,8 +14,9 @@ pub fn to_clipboard(cb: &mut arboard::Clipboard, img: &Pixmap) -> Result<(), Str
     .map_err(|e| e.to_string())
 }
 
-pub fn default_file_name() -> String {
-    chrono::Local::now().format("Frostshot_%Y-%m-%d_%H-%M-%S.png").to_string()
+pub fn default_file_name(template: &str) -> String {
+    crate::config::file_name(template)
+        .unwrap_or_else(|_| crate::config::file_name(crate::config::DEFAULT_TEMPLATE).unwrap_or_else(|_| "Frostshot.png".into()))
 }
 
 pub fn save_png(img: &Pixmap, path: &Path) -> Result<PathBuf, String> {

@@ -23,7 +23,7 @@ pub fn set_font_size(px: f32) {
     UI_FONT_BITS.store(px.clamp(10.0, 40.0).to_bits(), Ordering::Relaxed);
 }
 
-fn ui_font() -> f32 {
+pub fn ui_font() -> f32 {
     f32::from_bits(UI_FONT_BITS.load(Ordering::Relaxed))
 }
 

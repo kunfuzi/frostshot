@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub const DEFAULT_TEMPLATE: &str = "Frostshot_%Y-%m-%d_%H-%M-%S";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Config {
@@ -18,6 +20,14 @@ pub struct Config {
     pub printscreen_warned: bool,
     /// Размер шрифта подсказок и подписей в px при масштабе 100%.
     pub ui_font_size: f32,
+    /// Запуск при входе в систему (зеркало реального состояния).
+    pub autostart: bool,
+    /// При копировании в буфер также сохранять PNG в папку.
+    pub save_on_copy: bool,
+    /// Шаблон имени файла (strftime), без расширения.
+    pub file_template: String,
+    /// Затемнение вне выделения, 0.0..0.9.
+    pub dim: f32,
 }
 
 impl Default for Config {
@@ -34,11 +44,15 @@ impl Default for Config {
             width: 4.0,
             printscreen_warned: false,
             ui_font_size: 18.0,
+            autostart: false,
+            save_on_copy: false,
+            file_template: DEFAULT_TEMPLATE.into(),
+            dim: 0.5,
         }
     }
 }
 
-fn config_path() -> Option<PathBuf> {
+pub fn config_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "Frostshot").map(|d| d.config_dir().join("config.toml"))
 }
 
@@ -83,4 +97,19 @@ impl Config {
             Err(e) => log::warn!("config serialize error: {e}"),
         }
     }
+}
+
+/// Имя файла по шаблону или описание ошибки шаблона.
+pub fn file_name(template: &str) -> Result<String, String> {
+    use chrono::format::{Item, StrftimeItems};
+    if template.trim().is_empty() {
+        return Err("Шаблон пустой".into());
+    }
+    if let Some(c) = template.chars().find(|c| r#"\/:*?"<>|"#.contains(*c)) {
+        return Err(format!("Недопустимый символ «{c}»"));
+    }
+    if StrftimeItems::new(template).any(|i| matches!(i, Item::Error)) {
+        return Err("Неизвестный код после %".into());
+    }
+    Ok(format!("{}.png", chrono::Local::now().format(template)))
 }
