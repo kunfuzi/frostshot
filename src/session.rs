@@ -24,6 +24,8 @@ pub enum Action {
     CopyText,
     /// Найти и запикселить личные данные в выделении.
     AutoHide,
+    /// Выделение закончено (новое, сдвинутое, изменённое): повод для автоскрытия.
+    SelectionDone,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -689,6 +691,9 @@ impl Session {
                     self.active = None;
                     return Action::None;
                 }
+                self.sync();
+                self.mark_sel();
+                return Action::SelectionDone;
             }
             Drag::Draw(mut shape) => {
                 // Счётчик без протягивания: обычный кружок в точке клика.
@@ -706,7 +711,12 @@ impl Session {
                     self.push_shape(shape);
                 }
             }
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::None => {}
+            Drag::Move { .. } | Drag::Resize { .. } => {
+                self.sync();
+                self.mark_sel();
+                return Action::SelectionDone;
+            }
+            Drag::None => {}
         }
         self.sync();
         self.mark_sel();
@@ -823,14 +833,32 @@ impl Session {
     }
 
     /// Запикселить найденные области (координаты снимка). Каждая область отменяется отдельно.
-    pub fn apply_hide(&mut self, rects: &[Rect]) {
+    pub fn apply_hide(&mut self, rects: &[Rect]) -> usize {
         let c = draw::rgb(self.color);
+        // Уже запикселенное повторно не закрываем (автоскрытие после расширения выделения).
+        let covered = |r: &Rect, shapes: &[Shape]| {
+            shapes.iter().any(|s| match s.kind {
+                Kind::Pixelate(a, b) => {
+                    let (l, t, rr, bb) = (a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1));
+                    let iw = (r.right().min(rr) - r.left().max(l)).max(0.0);
+                    let ih = (r.bottom().min(bb) - r.top().max(t)).max(0.0);
+                    iw * ih >= 0.8 * r.width() * r.height()
+                }
+                _ => false,
+            })
+        };
+        let mut added = 0;
         for r in rects {
+            if covered(r, &self.shapes) {
+                continue;
+            }
+            added += 1;
             let kind = Kind::Pixelate((r.left(), r.top()), (r.right(), r.bottom()));
             // Мелкие блоки: текст не читается, но видно, что там было.
             self.push_shape(Shape { kind, color: c, width: 2.0 });
         }
         self.mark_sel();
+        added
     }
 
     /// Время образца или статуса вышло: убрать с экрана.

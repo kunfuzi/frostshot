@@ -28,6 +28,7 @@ const WIDTH: f64 = 700.0;
 pub enum Ctl {
     Autostart,
     Notify,
+    AutoHide,
     SaveOnCopy,
     DirChange,
     DirOpen,
@@ -235,6 +236,10 @@ impl Settings {
             }
             Some(Ctl::Notify) => {
                 cfg.notify = !cfg.notify;
+                fx.save = true;
+            }
+            Some(Ctl::AutoHide) => {
+                cfg.auto_hide = !cfg.auto_hide;
                 fx.save = true;
             }
             Some(Ctl::SaveOnCopy) => {
@@ -451,6 +456,7 @@ impl Settings {
         for (ctl, on, label) in [
             (Ctl::Autostart, cfg.autostart, "Запускать при входе в систему"),
             (Ctl::Notify, cfg.notify, "Уведомление после снимка (клик: доработать)"),
+            (Ctl::AutoHide, cfg.auto_hide, "Скрывать личные данные автоматически (почта, телефоны, карты, ключи)"),
             (Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку"),
         ] {
             let bs = (f + 2.0) * s;

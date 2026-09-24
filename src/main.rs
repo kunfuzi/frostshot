@@ -62,6 +62,8 @@ enum UserEvent {
 enum OcrPurpose {
     CopyText,
     AutoHide,
+    /// Автоскрытие после выделения: без сообщения, если ничего не нашлось.
+    AutoHideQuiet,
 }
 
 struct OverlayWin {

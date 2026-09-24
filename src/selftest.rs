@@ -394,10 +394,12 @@ fn ocr_check(c: &mut Check, dir: &Path) {
             let shot = crate::capture::MonitorShot { x: 0, y: 0, pixmap: pm.clone() };
             let mut s = Session::new(vec![shot], vec![1.0], 0.5, 0xE24B4A, 4.0, Some(Arc::new(font)));
             s.on_left_press(0, 5.0, 5.0);
-            s.on_left_release(0, 6.0, 5.0);
+            c.ok("selection done reported", s.on_left_release(0, 6.0, 5.0) == Action::SelectionDone);
             let before = s.result().unwrap();
             let rects: Vec<_> = found.iter().map(|(_, r)| *r).collect();
-            s.apply_hide(&rects);
+            let added = s.apply_hide(&rects);
+            c.ok("auto-hide adds areas", added == rects.len());
+            c.ok("auto-hide does not duplicate", s.apply_hide(&rects) == 0);
             let after = s.result().unwrap();
             output::save_png(&after, &dir.join("ocr_hidden.png")).ok();
             c.ok("auto-hide changes the image", before.data() != after.data());

@@ -30,6 +30,8 @@ pub struct Config {
     pub dim: f32,
     /// Уведомление после копирования и сохранения.
     pub notify: bool,
+    /// Скрывать личные данные сразу после выделения (распознавание в фоне).
+    pub auto_hide: bool,
 }
 
 impl Default for Config {
@@ -51,6 +53,7 @@ impl Default for Config {
             file_template: DEFAULT_TEMPLATE.into(),
             dim: 0.5,
             notify: true,
+            auto_hide: false,
         }
     }
 }

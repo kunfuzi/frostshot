@@ -312,6 +312,11 @@ impl App {
                 }
             }
             Action::CopyText => self.start_ocr(OcrPurpose::CopyText),
+            Action::SelectionDone => {
+                if self.config.auto_hide {
+                    self.start_ocr(OcrPurpose::AutoHideQuiet);
+                }
+            }
             Action::AutoHide => self.start_ocr(OcrPurpose::AutoHide),
             Action::QuickSave => {
                 let Some(img) = self.overlay.as_mut().and_then(|o| o.session.result()) else { return };
@@ -368,7 +373,9 @@ impl App {
         }
         let Some((crop, offset)) = ov.session.ocr_source() else { return };
         ov.session.ocr_busy = true;
-        ov.session.set_status("Распознаю текст…", true);
+        if !matches!(purpose, OcrPurpose::AutoHideQuiet) {
+            ov.session.set_status("Распознаю текст…", true);
+        }
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let t0 = std::time::Instant::now();
@@ -388,19 +395,25 @@ impl App {
         let lines = match result {
             Ok(l) => l,
             Err(e) => {
-                ov.session.set_status(e, false);
+                if !matches!(purpose, OcrPurpose::AutoHideQuiet) {
+                    ov.session.set_status(e, false);
+                }
                 return;
             }
         };
         match purpose {
-            OcrPurpose::AutoHide => {
+            OcrPurpose::AutoHide | OcrPurpose::AutoHideQuiet => {
+                let quiet = matches!(purpose, OcrPurpose::AutoHideQuiet);
                 let found = ocr::find_sensitive(&lines, 3.0);
                 let rects: Vec<_> = found
                     .iter()
                     .filter_map(|(_, r)| tiny_skia::Rect::from_xywh(r.x() + offset.0, r.y() + offset.1, r.width(), r.height()))
                     .collect();
-                ov.session.apply_hide(&rects);
-                ov.session.set_status(ocr::summary(&found), false);
+                let added = ov.session.apply_hide(&rects);
+                if !quiet || added > 0 {
+                    let text = ocr::summary(&found);
+                    ov.session.set_status(if quiet { format!("Автоскрытие: {text}") } else { text }, false);
+                }
             }
             OcrPurpose::CopyText => {
                 let text = ocr::text_of(&lines);
