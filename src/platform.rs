@@ -526,3 +526,44 @@ pub fn open_keyboard_settings() {
         let _ = std::process::Command::new("cmd").args(["/C", "start", "", "ms-settings:easeofaccess-keyboard"]).spawn();
     }
 }
+
+/// Сделать окно активным даже если сейчас активна оболочка (меню «Пуск», поиск,
+/// центр уведомлений). Они живут в слое выше «поверх всех» окон и закрываются,
+/// только когда активным становится другое окно. Обычный SetForegroundWindow
+/// Windows блокирует, поэтому на время подключаемся к очереди ввода активной программы.
+pub fn force_foreground(window: &winit::window::Window) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            BringWindowToTop, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        };
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Ok(h) = window.window_handle() else { return window.focus_window() };
+        let RawWindowHandle::Win32(w) = h.as_raw() else { return window.focus_window() };
+        let hwnd = w.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+        // SAFETY: hwnd живого окна; присоединение ввода снимаем в этой же функции.
+        unsafe {
+            let fg = GetForegroundWindow();
+            let mut class = [0u16; 128];
+            let n = if fg.is_null() { 0 } else { GetClassNameW(fg, class.as_mut_ptr(), class.len() as i32) };
+            let fg_class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+            let fg_tid = if fg.is_null() { 0 } else { GetWindowThreadProcessId(fg, std::ptr::null_mut()) };
+            let me = GetCurrentThreadId();
+            let attached = fg_tid != 0 && fg_tid != me && AttachThreadInput(me, fg_tid, 1) != 0;
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+            SetFocus(hwnd);
+            if attached {
+                AttachThreadInput(me, fg_tid, 0);
+            }
+            let ok = GetForegroundWindow() == hwnd;
+            log::info!("overlay foreground: {} (was {fg_class}, attached {attached})", if ok { "ok" } else { "FAILED" });
+        }
+        return;
+    }
+    #[cfg(not(windows))]
+    window.focus_window();
+}

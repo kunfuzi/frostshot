@@ -77,7 +77,7 @@ impl App {
         }
         let focus = cursor.map(|c| c.0).or_else(|| ov.session.active_rect().map(|_| 0)).unwrap_or(0);
         if let Some(w) = ov.wins.iter().find(|w| w.mon == focus) {
-            w.window.focus_window();
+            platform::force_foreground(&w.window);
         }
         self.overlay = Some(ov);
     }
@@ -350,7 +350,7 @@ impl App {
                     present(w, &mut ov.session);
                 }
                 if let Some(w) = ov.wins.first() {
-                    w.window.focus_window();
+                    platform::force_foreground(&w.window);
                 }
             }
             return;
