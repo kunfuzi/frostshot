@@ -514,8 +514,10 @@ fn main() {
         }));
     }
 
+    let config = Config::load();
+    ui::set_font_size(config.ui_font_size);
     let mut app = App {
-        config: Config::load(),
+        config,
         proxy,
         hotkeys: None,
         hotkey_ids: Vec::new(),

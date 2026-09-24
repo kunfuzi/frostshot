@@ -16,6 +16,8 @@ pub struct Config {
     pub width: f32,
     /// Предупреждение про PrintScreen и Snipping Tool уже показано.
     pub printscreen_warned: bool,
+    /// Размер шрифта подсказок и подписей в px при масштабе 100%.
+    pub ui_font_size: f32,
 }
 
 impl Default for Config {
@@ -31,6 +33,7 @@ impl Default for Config {
             color: 0xE24B4A,
             width: 4.0,
             printscreen_warned: false,
+            ui_font_size: 18.0,
         }
     }
 }
@@ -45,10 +48,19 @@ impl Config {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                log::warn!("config parse error {}: {e}", path.display());
-                Self::default()
-            }),
+            Ok(text) => match toml::from_str::<Self>(&text) {
+                Ok(cfg) => {
+                    // Дописать ключи, появившиеся в новой версии.
+                    if toml::to_string_pretty(&cfg).is_ok_and(|t| t != text) {
+                        cfg.save();
+                    }
+                    cfg
+                }
+                Err(e) => {
+                    log::warn!("config parse error {}: {e}", path.display());
+                    Self::default()
+                }
+            },
             Err(_) => {
                 let cfg = Self::default();
                 cfg.save();

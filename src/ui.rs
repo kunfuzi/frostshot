@@ -3,6 +3,7 @@
 use crate::draw::{self, Rgb};
 use crate::shapes::Tool;
 use ab_glyph::FontVec;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tiny_skia::{FillRule, LineCap, PathBuilder, Pixmap, Rect, Stroke, StrokeDash, Transform};
 
 pub const PALETTE: [u32; 8] = [
@@ -15,8 +16,16 @@ const MUTED: Rgb = [0x70, 0x70, 0x76];
 pub const ACCENT: Rgb = [0x37, 0x8a, 0xdd];
 const HOVER: Rgb = [0x3a, 0x3a, 0x40];
 const WHITE: Rgb = [255, 255, 255];
-/// Базовый размер шрифта интерфейса при масштабе 100%.
-const UI_FONT: f32 = 15.0;
+/// Базовый размер шрифта интерфейса при масштабе 100% (из config.toml).
+static UI_FONT_BITS: AtomicU32 = AtomicU32::new(0x4190_0000); // 18.0
+
+pub fn set_font_size(px: f32) {
+    UI_FONT_BITS.store(px.clamp(10.0, 40.0).to_bits(), Ordering::Relaxed);
+}
+
+fn ui_font() -> f32 {
+    f32::from_bits(UI_FONT_BITS.load(Ordering::Relaxed))
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Btn {
@@ -167,7 +176,7 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
 }
 
 fn tooltip(pm: &mut Pixmap, font: &FontVec, text: &str, anchor: Rect, s: f32) {
-    let size = UI_FONT * s;
+    let size = ui_font() * s;
     let (tw, th) = draw::text_size(font, text, size);
     let pad = 6.0 * s;
     let (w, h) = (tw + 2.0 * pad, th + pad);
@@ -314,7 +323,7 @@ pub fn magnifier(pm: &mut Pixmap, src: &Pixmap, cx: f32, cy: f32, s: f32, font: 
     const N: i32 = 15;
     let cell = (8.0 * s).round().max(4.0);
     let size = cell * N as f32;
-    let info_h = if font.is_some() { 25.0 * s } else { 0.0 };
+    let info_h = if font.is_some() { (ui_font() + 10.0) * s } else { 0.0 };
     let off = 20.0 * s;
     let (mw, mh) = (pm.width() as f32, pm.height() as f32);
     let mut x = cx + off;
@@ -364,13 +373,13 @@ pub fn magnifier(pm: &mut Pixmap, src: &Pixmap, cx: f32, cy: f32, s: f32, font: 
         if let Some(r) = Rect::from_xywh(x, y + size, size, info_h) {
             draw::fill_rect(pm, r, [0, 0, 0], 0.8, None);
         }
-        draw::draw_text(pm, font, &text, x + 6.0 * s, y + size + 3.0 * s, 14.0 * s, WHITE, 1.0, None);
+        draw::draw_text(pm, font, &text, x + 6.0 * s, y + size + 3.0 * s, (ui_font() - 1.0) * s, WHITE, 1.0, None);
     }
 }
 
 /// Плашка с текстом (размер выделения, подсказки).
 pub fn label(pm: &mut Pixmap, font: &FontVec, text: &str, x: f32, y: f32, s: f32) -> Rect {
-    let size = UI_FONT * s;
+    let size = ui_font() * s;
     let (tw, th) = draw::text_size(font, text, size);
     let pad = 6.0 * s;
     let r = Rect::from_xywh(x, y, tw + 2.0 * pad, th + pad).unwrap();
@@ -380,6 +389,6 @@ pub fn label(pm: &mut Pixmap, font: &FontVec, text: &str, x: f32, y: f32, s: f32
 }
 
 pub fn label_size(font: &FontVec, text: &str, s: f32) -> (f32, f32) {
-    let (tw, th) = draw::text_size(font, text, UI_FONT * s);
+    let (tw, th) = draw::text_size(font, text, ui_font() * s);
     (tw + 12.0 * s, th + 6.0 * s)
 }
