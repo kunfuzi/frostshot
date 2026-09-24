@@ -73,6 +73,8 @@ pub struct Layout {
     pub buttons: Vec<(Btn, Rect)>,
     /// Разделители групп инструментов.
     pub seps: Vec<Rect>,
+    /// Заголовок панели инструментов: за него панель перетаскивают.
+    pub grip: Option<Rect>,
 }
 
 /// Инструменты по группам, по два в ряд, как в Photoshop: выбор и измерение,
@@ -89,6 +91,9 @@ impl Layout {
     pub fn hit(&self, x: f32, y: f32) -> Option<Btn> {
         self.buttons.iter().find(|(_, r)| contains(r, x, y)).map(|(b, _)| *b)
     }
+    pub fn over_grip(&self, x: f32, y: f32) -> bool {
+        self.grip.is_some_and(|r| contains(&r, x, y))
+    }
     pub fn over_panel(&self, x: f32, y: f32) -> bool {
         self.panels.iter().any(|r| contains(r, x, y))
     }
@@ -102,11 +107,15 @@ fn ov(a: Rect, b: Rect) -> bool {
     a.left() < b.right() && b.left() < a.right() && a.top() < b.bottom() && b.top() < a.bottom()
 }
 
-pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_menu: bool) -> Layout {
+/// tools_at: левый верхний угол панели инструментов, если её перетащили (иначе у выделения).
+#[allow(clippy::too_many_arguments)]
+pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_menu: bool, tools_at: Option<(f32, f32)>) -> Layout {
     let b = (32.0 * s).round();
     let pad = (4.0 * s).round();
     let gap = (8.0 * s).round();
-    let mut out = Layout { panels: vec![], buttons: vec![], seps: vec![] };
+    let mut out = Layout { panels: vec![], buttons: vec![], seps: vec![], grip: None };
+    // Заголовок-хваталка над инструментами.
+    let grip_h = (12.0 * s).round();
 
     // Панель инструментов: группы по два в ряд, между группами разделитель.
     // Не помещается по высоте: следующие группы уходят в соседний столбец.
@@ -115,7 +124,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     let (mut gcol, mut y, mut max_h) = (0usize, 0.0f32, 0.0f32);
     for g in TOOL_GROUPS {
         let gh = g.len().div_ceil(2) as f32 * b;
-        if y > 0.0 && y + sep + gh > mh - 2.0 * pad {
+        if y > 0.0 && y + sep + gh > mh - 2.0 * pad - grip_h {
             (gcol, y) = (gcol + 1, 0.0);
         }
         if y > 0.0 {
@@ -126,21 +135,28 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
         max_h = max_h.max(y);
     }
     let gcols = gcol + 1;
-    let (vw, vh) = (gcols as f32 * 2.0 * b + (gcols - 1) as f32 * gap + 2.0 * pad, max_h + 2.0 * pad);
-    let mut vx = bbox.right() + gap;
-    if vx + vw > mw {
-        vx = bbox.left() - gap - vw;
-        if vx < 0.0 {
-            vx = bbox.right() - gap - vw;
+    let (vw, vh) = (gcols as f32 * 2.0 * b + (gcols - 1) as f32 * gap + 2.0 * pad, grip_h + max_h + 2.0 * pad);
+    let (vx, vy) = match tools_at {
+        // Перетащили: там и стоит, но целиком на экране.
+        Some((x, y)) => (x.clamp(0.0, (mw - vw).max(0.0)), y.clamp(0.0, (mh - vh).max(0.0))),
+        None => {
+            let mut vx = bbox.right() + gap;
+            if vx + vw > mw {
+                vx = bbox.left() - gap - vw;
+                if vx < 0.0 {
+                    vx = bbox.right() - gap - vw;
+                }
+            }
+            (vx, bbox.top().min(mh - vh).max(0.0))
         }
-    }
-    let vy = bbox.top().min(mh - vh).max(0.0);
+    };
     let vpanel = Rect::from_xywh(vx, vy, vw, vh).unwrap();
     out.panels.push(vpanel);
+    out.grip = Rect::from_xywh(vx, vy, vw, grip_h + pad);
     for (g, (gc, gy)) in TOOL_GROUPS.iter().zip(&place) {
         let gx = vx + pad + *gc as f32 * (2.0 * b + gap);
         let first = *gy == 0.0;
-        let gy = vy + pad + gy;
+        let gy = vy + grip_h + pad + gy;
         if !first {
             let t = (gy - sep / 2.0 - 0.5 * s).round();
             out.seps.push(Rect::from_xywh(gx + 4.0 * s, t, 2.0 * b - 8.0 * s, s.max(1.0)).unwrap());
@@ -217,6 +233,16 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
     }
     for r in &l.seps {
         draw::fill_rect(pm, *r, HOVER, 1.0, None);
+    }
+    // Хваталка: два ряда точек посередине заголовка.
+    if let Some(g) = l.grip {
+        let (cx, cy) = (g.left() + g.width() / 2.0, g.top() + g.height() / 2.0 + s);
+        let d = 4.0 * s;
+        for i in -2..=2 {
+            for j in [-0.5f32, 0.5] {
+                draw::circle(pm, cx + i as f32 * d, cy + j * d, 1.1 * s, MUTED, 1.0, true, 0.0);
+            }
+        }
     }
     for (btn, r) in &l.buttons {
         let active = matches!(btn, Btn::Tool(t) if *t == st.tool);

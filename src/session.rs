@@ -46,6 +46,8 @@ enum Drag {
     ShapeMove { last: Pt, snapped: bool },
     /// Ручка выбранной фигуры (номер как в Shape::handles).
     ShapeHandle { handle: usize, snapped: bool },
+    /// Панель инструментов тянут за заголовок: смещение курсора от её угла.
+    Panel { grab: Pt },
 }
 
 /// Масштаб и сдвиг вида монитора (Ctrl + колесо). Точка экрана (x, y)
@@ -144,6 +146,10 @@ pub struct Session {
     pub ocr_busy: bool,
     /// Миллиметров на пиксель у каждого монитора (линейка), None: неизвестно.
     mm: Vec<Option<f32>>,
+    /// Панель инструментов перетащили: монитор и левый верхний угол на экране.
+    tools_at: Option<(usize, Pt)>,
+    /// Последний клик по заголовку панели: двойной возвращает её к выделению.
+    grip_click: Option<std::time::Instant>,
 }
 
 /// Сколько держать строку статуса.
@@ -240,6 +246,8 @@ impl Session {
             status: None,
             ocr_busy: false,
             mm,
+            tools_at: None,
+            grip_click: None,
         }
     }
 
@@ -372,7 +380,7 @@ impl Session {
     }
 
     fn toolbars_visible(&self) -> bool {
-        self.has_selection() && matches!(self.drag, Drag::None | Drag::Draw(_))
+        self.has_selection() && matches!(self.drag, Drag::None | Drag::Draw(_) | Drag::Panel { .. })
     }
 
     fn layout(&self) -> Option<Layout> {
@@ -385,7 +393,8 @@ impl Session {
         let v = self.views[mon];
         let (x0, y0) = v.to_scr(b.x as f32, b.y as f32);
         let r = Rect::from_xywh(x0, y0, b.w as f32 * v.z, b.h as f32 * v.z)?;
-        Some(ui::layout(r, w as f32, h as f32, self.scales[mon], self.palette_open, self.save_menu))
+        let at = self.tools_at.filter(|(m, _)| *m == mon).map(|(_, p)| p);
+        Some(ui::layout(r, w as f32, h as f32, self.scales[mon], self.palette_open, self.save_menu, at))
     }
 
     fn commit_text(&mut self) {
@@ -599,6 +608,11 @@ impl Session {
         self.cursor = Some((mon, (x, y)));
         self.mark(mon);
 
+        if let Drag::Panel { grab } = self.drag {
+            self.tools_at = Some((mon, (x - grab.0, y - grab.1)));
+            return;
+        }
+
         if let Some((pm, start, o)) = self.pan {
             if pm == mon {
                 let (w, h) = self.shot_size(mon);
@@ -724,7 +738,7 @@ impl Session {
                     }
                     self.mark_sel();
                 }
-                Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } => {}
+                Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } | Drag::Panel { .. } => {}
             }
         } else {
             self.hover = None;
@@ -738,6 +752,20 @@ impl Session {
 
         if self.active == Some(mon) {
             if let Some(l) = self.layout() {
+                // Заголовок панели: тянуть; двойной клик возвращает панель к выделению.
+                if l.over_grip(x, y) {
+                    let now = std::time::Instant::now();
+                    if self.grip_click.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(400)) {
+                        self.grip_click = None;
+                        self.tools_at = None;
+                        self.mark(mon);
+                        return Action::None;
+                    }
+                    self.grip_click = Some(now);
+                    let v = l.panels[0];
+                    self.drag = Drag::Panel { grab: (x - v.left(), y - v.top()) };
+                    return Action::None;
+                }
                 if let Some(b) = l.hit(x, y) {
                     return self.click_btn(b);
                 }
@@ -906,7 +934,7 @@ impl Session {
                 self.mark_sel();
                 return Action::SelectionDone;
             }
-            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } | Drag::None => {}
+            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } | Drag::Panel { .. } | Drag::None => {}
         }
         self.sync();
         self.mark_sel();
@@ -1231,12 +1259,16 @@ impl Session {
             Drag::Resize { handle, .. } => return handle_cursor(*handle),
             Drag::NewSel { .. } | Drag::Draw(_) | Drag::ShapeHandle { .. } => return CursorIcon::Crosshair,
             Drag::ShapeMove { .. } => return CursorIcon::Move,
+            Drag::Panel { .. } => return CursorIcon::Grabbing,
             Drag::None => {}
         }
         if self.active != Some(mon) || !self.has_selection() {
             return CursorIcon::Crosshair;
         }
         if let Some(l) = self.layout() {
+            if l.over_grip(x, y) {
+                return CursorIcon::Grab;
+            }
             if l.hit(x, y).is_some() {
                 return CursorIcon::Pointer;
             }
@@ -1494,6 +1526,10 @@ impl Session {
     }
     pub fn picked(&self) -> Option<usize> {
         self.picked
+    }
+    /// Панель инструментов на экране (для самопроверки).
+    pub fn tools_rect(&self) -> Option<Rect> {
+        self.layout().map(|l| l.panels[0])
     }
 
     /// SVG: снимок картинкой, фигуры векторами (см. svg.rs).

@@ -392,7 +392,7 @@ pub fn run(dir: &Path) -> i32 {
     output::save_png(&frame, &dir.join("frame_idle.png")).ok();
 
     // Панель инструментов: каждый инструмент ровно один раз, кнопки не перекрываются.
-    let l = crate::ui::layout(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 1.0, false, false);
+    let l = crate::ui::layout(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 1.0, false, false, None);
     for t in crate::shapes::Tool::ALL {
         let n = l.buttons.iter().filter(|(b, _)| *b == crate::ui::Btn::Tool(t)).count();
         c.ok(&format!("toolbar has {t:?} once"), n == 1);
@@ -402,7 +402,7 @@ pub fn run(dir: &Path) -> i32 {
     });
     c.ok("toolbar buttons do not overlap", !overlap);
     // Низкий монитор: группы уходят в соседний столбец и помещаются по высоте.
-    let low = crate::ui::layout(tiny_skia::Rect::from_xywh(50.0, 50.0, 200.0, 100.0).unwrap(), 800.0, 300.0, 1.0, false, false);
+    let low = crate::ui::layout(tiny_skia::Rect::from_xywh(50.0, 50.0, 200.0, 100.0).unwrap(), 800.0, 300.0, 1.0, false, false, None);
     c.ok("toolbar fits low monitor", low.panels[0].bottom() <= 300.0);
 
     ocr_check(&mut c, dir);
@@ -627,6 +627,18 @@ fn edit_check(c: &mut Check, dir: &Path, font: Option<Arc<ab_glyph::FontVec>>) {
     c.ok("edit: new area keeps shapes", s.shapes().len() == 4);
     let img = s.result().unwrap();
     c.ok("edit: new area size", (img.width(), img.height()) == (700, 500));
+
+    // Панель инструментов тянут за заголовок, двойной клик по нему возвращает её.
+    let r0 = s.tools_rect().unwrap();
+    let g = (r0.left() + r0.width() / 2.0, r0.top() + 4.0);
+    drag(&mut s, 0, g, (g.0 - 300.0, g.1 + 40.0));
+    let r1 = s.tools_rect().unwrap();
+    c.ok("panel dragged by its title", (r1.left() - (r0.left() - 300.0)).abs() < 1.0 && (r1.top() - (r0.top() + 40.0)).abs() < 1.0);
+    c.ok("panel drag keeps shapes and selection", s.shapes().len() == 4 && s.result().is_some_and(|i| (i.width(), i.height()) == (700, 500)));
+    let g1 = (r1.left() + r1.width() / 2.0, r1.top() + 4.0);
+    click(&mut s, g1.0, g1.1);
+    click(&mut s, g1.0, g1.1);
+    c.ok("panel double click returns it", s.tools_rect() == Some(r0));
 
     // Проект: после открытия Ctrl+Z снимает фигуры по одной.
     let bytes = s.to_project().unwrap();
