@@ -109,6 +109,8 @@ struct App {
     /// Где значок в трее (центр X, верх Y) и когда на него навели курсор.
     tray_anchor: Option<(i32, i32)>,
     tray_hover_since: Option<std::time::Instant>,
+    /// После клика по значку панель истории не показываем, пока курсор не уйдёт с него.
+    tray_hover_blocked: bool,
     popup_hide_at: Option<std::time::Instant>,
     toast_pos: (f32, f32),
     pending_save: Option<Pending>,
@@ -335,19 +337,26 @@ impl ApplicationHandler<UserEvent> for App {
                     app.start_capture(el);
                 }
             }
-            UserEvent::Tray(TrayIconEvent::Click { button: TrayButton::Left, button_state: MouseButtonState::Up, .. }) => {
-                app.start_capture(el);
+            UserEvent::Tray(TrayIconEvent::Click { button, button_state, .. }) => {
+                // Клик по значку (меню, захват): панель истории не нужна и не должна мешать.
+                app.tray_hover_since = None;
+                app.tray_hover_blocked = true;
+                app.popup = None;
+                if button == TrayButton::Left && button_state == MouseButtonState::Up {
+                    app.start_capture(el);
+                }
             }
             UserEvent::Tray(TrayIconEvent::Enter { rect, .. } | TrayIconEvent::Move { rect, .. }) => {
                 app.tray_anchor = Some(((rect.position.x + rect.size.width as f64 / 2.0) as i32, rect.position.y as i32));
                 if app.popup.is_some() {
                     app.popup_hide_at = None;
-                } else if app.tray_hover_since.is_none() {
+                } else if app.tray_hover_since.is_none() && !app.tray_hover_blocked {
                     app.tray_hover_since = Some(std::time::Instant::now());
                 }
             }
             UserEvent::Tray(TrayIconEvent::Leave { .. }) => {
                 app.tray_hover_since = None;
+                app.tray_hover_blocked = false;
                 if app.popup.is_some() {
                     app.popup_hide_at = Some(std::time::Instant::now() + POPUP_HIDE);
                 }
@@ -562,6 +571,7 @@ fn main() {
         popup: None,
         tray_anchor: None,
         tray_hover_since: None,
+        tray_hover_blocked: false,
         popup_hide_at: None,
         toast_pos: (0.0, 0.0),
         pending_save: None,

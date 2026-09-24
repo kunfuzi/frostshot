@@ -41,6 +41,7 @@ pub enum Ctl {
     OpenConfig,
     Reset,
     Close,
+    Tab(usize),
     ShellRegister,
     ShellUnregister,
     DefaultApps,
@@ -86,7 +87,10 @@ pub struct Settings {
     font: Option<Arc<FontVec>>,
     sized: bool,
     pub shell: crate::platform::ShellStatus,
+    tab: usize,
 }
+
+const TABS: [&str; 4] = ["Общие", "Сохранение", "Захват", "Клавиши"];
 
 const KEYS: [(&str, &str); 21] = [
     ("V / L", "рамка / лассо"),
@@ -164,6 +168,7 @@ impl Settings {
             font,
             sized: false,
             shell: crate::platform::shell_status(),
+            tab: 0,
         };
         s.present(cfg);
         s.window.set_visible(true);
@@ -275,6 +280,7 @@ impl Settings {
             Some(Ctl::OpenConfig) => fx.open_config = true,
             Some(Ctl::Reset) => fx.reset = true,
             Some(Ctl::Close) => fx.close = true,
+            Some(Ctl::Tab(i)) => self.tab = i,
             Some(Ctl::ShellRegister) => fx.shell_register = Some(true),
             Some(Ctl::ShellUnregister) => fx.shell_register = Some(false),
             Some(Ctl::DefaultApps) => fx.default_apps = true,
@@ -393,7 +399,12 @@ impl Settings {
         if self.pm.width() != w || self.pm.height() != h {
             self.pm = Pixmap::new(w, h).unwrap();
         }
-        let content_h = self.draw(cfg);
+        // Высота окна одна на все вкладки: меряем каждую, кнопки ставим по самой длинной.
+        let mut buttons_y: f32 = 0.0;
+        for t in 0..TABS.len() {
+            buttons_y = buttons_y.max(self.draw(cfg, t, 0.0).0);
+        }
+        let (_, content_h) = self.draw(cfg, self.tab, buttons_y);
         // Подогнать высоту окна под содержимое (меняется вместе с размером шрифта).
         {
             self.sized = true;
@@ -414,12 +425,14 @@ impl Settings {
         let _ = buf.present();
     }
 
-    fn draw(&mut self, cfg: &Config) -> f32 {
+    /// Нарисовать вкладку tab; кнопки внизу ставятся не выше buttons_y (одна высота
+    /// для всех вкладок). Возвращает (конец содержимого вкладки, полная высота).
+    fn draw(&mut self, cfg: &Config, tab: usize, buttons_y: f32) -> (f32, f32) {
         let s = self.window.scale_factor() as f32;
         let pm = &mut self.pm;
         pm.fill(tiny_skia::Color::from_rgba8(BG[0], BG[1], BG[2], 255));
         self.rects.clear();
-        let Some(font) = self.font.clone() else { return 400.0 * s };
+        let Some(font) = self.font.clone() else { return (400.0 * s, 400.0 * s) };
         let font = font.as_ref();
         let pad = 24.0 * s;
         let w = pm.width() as f32;
@@ -448,30 +461,9 @@ impl Settings {
             rects.push((ctl, r));
             bw
         };
-        let section = |pm: &mut Pixmap, y: &mut f32, title: &str| {
-            let _ = gap_line;
-            *y += 10.0 * s;
-            text(pm, title, pad, *y, small, ACCENT);
-            *y += small * 2.0;
-        };
-
-        let title = (f + 8.0) * s;
-        text(pm, "Frostshot", pad, y, title, FG);
-        let ver = concat!("версия ", env!("CARGO_PKG_VERSION"));
-        text(pm, ver, pad + tw("Frostshot", title) + 12.0 * s, y + (title - small) * 0.6, small, MUTED);
-        y += title * 1.8;
-
-        // Общие.
-        section(pm, &mut y, "Общие");
-        for (ctl, on, label) in [
-            (Ctl::Autostart, cfg.autostart, "Запускать при входе в систему"),
-            (Ctl::Notify, cfg.notify, "Уведомление после снимка (клик: доработать)"),
-            (Ctl::AutoHide, cfg.auto_hide, "Скрывать личные данные автоматически (почта, телефоны, карты, ключи)"),
-            (Ctl::History, cfg.history, "Хранить историю снимков (10 последних, 7 дней, в меню трея)"),
-            (Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку"),
-        ] {
+        let checkbox = |pm: &mut Pixmap, rects: &mut Vec<(Ctl, Rect)>, y: &mut f32, ctl: Ctl, on: bool, label: &str| {
             let bs = (f + 2.0) * s;
-            let by = y + (row - bs) / 2.0;
+            let by = *y + (row - bs) / 2.0;
             let br = Rect::from_xywh(pad, by, bs, bs).unwrap();
             draw::fill_rounded(pm, br, 4.0 * s, if on { ACCENT } else if hover == Some(ctl) { FIELD_HOVER } else { FIELD }, 1.0);
             if !on {
@@ -483,168 +475,212 @@ impl Settings {
                 draw::line(pm, x0 + 4.0 * k, y0 + 9.5 * k, x0 + 7.5 * k, y0 + 13.0 * k, [255, 255, 255], 1.0, 2.0 * s, None);
                 draw::line(pm, x0 + 7.5 * k, y0 + 13.0 * k, x0 + 14.0 * k, y0 + 5.5 * k, [255, 255, 255], 1.0, 2.0 * s, None);
             }
-            text(pm, label, pad + bs + 12.0 * s, center_y(y, row, body), body, FG);
+            text(pm, label, pad + bs + 12.0 * s, center_y(*y, row, body), body, FG);
             let lw = bs + 12.0 * s + tw(label, body);
-            rects.push((ctl, Rect::from_xywh(pad, y, lw, row).unwrap()));
-            y += row + 4.0 * s;
+            rects.push((ctl, Rect::from_xywh(pad, *y, lw, row).unwrap()));
+            *y += row + 4.0 * s;
+        };
+
+        let title = (f + 8.0) * s;
+        text(pm, "Frostshot", pad, y, title, FG);
+        let ver = concat!("версия ", env!("CARGO_PKG_VERSION"));
+        text(pm, ver, pad + tw("Frostshot", title) + 12.0 * s, y + (title - small) * 0.6, small, MUTED);
+        y += title * 1.7;
+
+        // Вкладки.
+        {
+            let mut x = pad;
+            for (i, name) in TABS.iter().enumerate() {
+                let bw = tw(name, body) + 28.0 * s;
+                let r = Rect::from_xywh(x, y, bw, row).unwrap();
+                let active = i == tab;
+                if active {
+                    draw::fill_rounded(pm, r, 6.0 * s, FIELD, 1.0);
+                } else if hover == Some(Ctl::Tab(i)) {
+                    draw::fill_rounded(pm, r, 6.0 * s, [0x24, 0x24, 0x28], 1.0);
+                }
+                text(pm, name, x + 14.0 * s, center_y(y, row, body), body, if active { FG } else { MUTED });
+                if active {
+                    draw::line(pm, x + 12.0 * s, y + row - 2.0 * s, x + bw - 12.0 * s, y + row - 2.0 * s, ACCENT, 1.0, 2.5 * s, None);
+                }
+                rects.push((Ctl::Tab(i), r));
+                x += bw + 6.0 * s;
+            }
+            y += row;
+            draw::line(pm, pad, y + 1.0 * s, w - pad, y + 1.0 * s, BORDER, 1.0, 1.0 * s, None);
+            y += 18.0 * s;
         }
 
-        // Сохранение.
-        section(pm, &mut y, "Сохранение");
-        text(pm, "Папка", pad, y, small, MUTED);
-        y += gap_line;
-        {
-            let bx_open = w - pad - (tw("Открыть", body) + 28.0 * s);
-            let bx_change = bx_open - 8.0 * s - (tw("Сменить…", body) + 28.0 * s);
-            let fw = bx_change - 8.0 * s - pad;
-            let fr = Rect::from_xywh(pad, y, fw, row).unwrap();
-            draw::fill_rounded(pm, fr, 6.0 * s, FIELD, 1.0);
-            let full = cfg.save_dir.display().to_string();
-            let avail = fw - 24.0 * s;
-            let mut shown = full.clone();
-            if tw(&shown, body) > avail {
-                let chars: Vec<char> = full.chars().collect();
-                let mut start = 0;
-                while start < chars.len() {
-                    shown = format!("…{}", chars[start..].iter().collect::<String>());
-                    if tw(&shown, body) <= avail {
-                        break;
+        match tab {
+            // Общие.
+            0 => {
+                checkbox(pm, rects, &mut y, Ctl::Autostart, cfg.autostart, "Запускать при входе в систему");
+                checkbox(pm, rects, &mut y, Ctl::Notify, cfg.notify, "Уведомление после снимка (клик: доработать)");
+                checkbox(pm, rects, &mut y, Ctl::AutoHide, cfg.auto_hide, "Скрывать личные данные автоматически");
+                text(pm, "Почта, телефоны, номера карт и счетов, ключи, пароли", pad + (f + 14.0) * s, y - 6.0 * s, small, MUTED);
+                y += gap_line;
+                checkbox(pm, rects, &mut y, Ctl::History, cfg.history, "Хранить историю снимков");
+                text(pm, "10 последних за 7 дней, панель при наведении на значок в трее", pad + (f + 14.0) * s, y - 6.0 * s, small, MUTED);
+                y += gap_line;
+                button(pm, rects, Ctl::HistoryClear, pad, y, "Очистить историю", false);
+                y += row + 8.0 * s;
+            }
+            // Сохранение.
+            1 => {
+                checkbox(pm, rects, &mut y, Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку");
+                y += 8.0 * s;
+                text(pm, "Папка", pad, y, small, MUTED);
+                y += gap_line;
+                let bx_open = w - pad - (tw("Открыть", body) + 28.0 * s);
+                let bx_change = bx_open - 8.0 * s - (tw("Сменить…", body) + 28.0 * s);
+                let fw = bx_change - 8.0 * s - pad;
+                let fr = Rect::from_xywh(pad, y, fw, row).unwrap();
+                draw::fill_rounded(pm, fr, 6.0 * s, FIELD, 1.0);
+                let full = cfg.save_dir.display().to_string();
+                let avail = fw - 24.0 * s;
+                let mut shown = full.clone();
+                if tw(&shown, body) > avail {
+                    let chars: Vec<char> = full.chars().collect();
+                    let mut start = 0;
+                    while start < chars.len() {
+                        shown = format!("…{}", chars[start..].iter().collect::<String>());
+                        if tw(&shown, body) <= avail {
+                            break;
+                        }
+                        start += 1;
                     }
-                    start += 1;
                 }
-            }
-            text(pm, &shown, pad + 12.0 * s, center_y(y, row, body), body, FG);
-            button(pm, rects, Ctl::DirChange, bx_change, y, "Сменить…", false);
-            button(pm, rects, Ctl::DirOpen, bx_open, y, "Открыть", false);
-            y += row + 12.0 * s;
-        }
-        text(pm, "Имя файла: %Y год, %m месяц, %d день, %H-%M-%S время", pad, y, small, MUTED);
-        y += gap_line;
-        {
-            let fr = Rect::from_xywh(pad, y, cw, row).unwrap();
-            let focused = self.focus_template;
-            draw::fill_rounded(pm, fr, 6.0 * s, if hover == Some(Ctl::Template) && !focused { FIELD_HOVER } else { FIELD }, 1.0);
-            if focused {
-                if let Some(p) = draw::rounded_rect(fr, 6.0 * s) {
-                    draw::stroke_path(pm, &p, ACCENT, 1.0, 1.5 * s, None);
+                text(pm, &shown, pad + 12.0 * s, center_y(y, row, body), body, FG);
+                button(pm, rects, Ctl::DirChange, bx_change, y, "Сменить…", false);
+                button(pm, rects, Ctl::DirOpen, bx_open, y, "Открыть", false);
+                y += row + 12.0 * s;
+                text(pm, "Имя файла: %Y год, %m месяц, %d день, %H-%M-%S время", pad, y, small, MUTED);
+                y += gap_line;
+                let fr = Rect::from_xywh(pad, y, cw, row).unwrap();
+                let focused = self.focus_template;
+                draw::fill_rounded(pm, fr, 6.0 * s, if hover == Some(Ctl::Template) && !focused { FIELD_HOVER } else { FIELD }, 1.0);
+                if focused {
+                    if let Some(p) = draw::rounded_rect(fr, 6.0 * s) {
+                        draw::stroke_path(pm, &p, ACCENT, 1.0, 1.5 * s, None);
+                    }
                 }
-            }
-            let ty = center_y(y, row, body);
-            text(pm, &self.template, pad + 12.0 * s, ty, body, FG);
-            if focused {
-                let cx = pad + 12.0 * s + tw(&self.template, body) + 1.0 * s;
-                draw::line(pm, cx, ty, cx, ty + draw::line_height(font, body), FG, 1.0, 1.5 * s, None);
-            }
-            rects.push((Ctl::Template, fr));
-            y += row + 6.0 * s;
-            match config::file_name(&self.template) {
-                Ok(n) => text(pm, &format!("Пример: {n}"), pad, y, small, MUTED),
-                Err(e) => text(pm, &e, pad, y, small, ERR),
-            }
-            y += gap_line;
-        }
-
-        // Захват.
-        section(pm, &mut y, "Захват");
-        let label_w = tw("Запасной хоткей", body) + 24.0 * s;
-        for (i, (label, value)) in [("Хоткей", &cfg.hotkey), ("Запасной хоткей", &cfg.fallback_hotkey)].into_iter().enumerate() {
-            text(pm, label, pad, center_y(y, row, body), body, FG);
-            let fx = pad + label_w;
-            let fr = Rect::from_xywh(fx, y, cw - label_w, row).unwrap();
-            let rec = self.recording == Some(i);
-            draw::fill_rounded(pm, fr, 6.0 * s, if hover == Some(Ctl::Hotkey(i)) && !rec { FIELD_HOVER } else { FIELD }, 1.0);
-            if rec {
-                if let Some(p) = draw::rounded_rect(fr, 6.0 * s) {
-                    draw::stroke_path(pm, &p, ACCENT, 1.0, 1.5 * s, None);
+                let ty = center_y(y, row, body);
+                text(pm, &self.template, pad + 12.0 * s, ty, body, FG);
+                if focused {
+                    let cx = pad + 12.0 * s + tw(&self.template, body) + 1.0 * s;
+                    draw::line(pm, cx, ty, cx, ty + draw::line_height(font, body), FG, 1.0, 1.5 * s, None);
                 }
-            }
-            let (shown, c) = if rec {
-                ("Нажмите сочетание…  Esc: отмена".to_string(), MUTED)
-            } else if value.is_empty() {
-                ("не задан".to_string(), MUTED)
-            } else {
-                (value.clone(), FG)
-            };
-            text(pm, &shown, fx + 12.0 * s, center_y(y, row, body), body, c);
-            rects.push((Ctl::Hotkey(i), fr));
-            y += row + 4.0 * s;
-            let msg = if rec { self.record_msg.clone() } else { self.hotkey_err[i].clone() };
-            if let Some(m) = msg {
-                text(pm, &m, fx, y, small, ERR);
+                rects.push((Ctl::Template, fr));
+                y += row + 6.0 * s;
+                match config::file_name(&self.template) {
+                    Ok(n) => text(pm, &format!("Пример: {n}"), pad, y, small, MUTED),
+                    Err(e) => text(pm, &e, pad, y, small, ERR),
+                }
                 y += gap_line;
             }
-        }
-        // PrintScreen через Windows (ms-screenclip).
-        if self.shell.supported {
-            y += 4.0 * s;
-            text(pm, "PrintScreen через Windows", pad, y, body, FG);
-            y += gap_line + 2.0 * s;
-            let sh = &self.shell;
-            let name = match sh.handler.as_deref() {
-                Some(crate::platform::SCREENCLIP_PROGID) => "Frostshot".to_string(),
-                Some(p) => p.to_string(),
-                None => "Ножницы Windows".to_string(),
-            };
-            let (status, color) = if !sh.key_enabled {
-                ("Параметр Windows выключен: PrintScreen ловит хоткей Frostshot".to_string(), MUTED)
-            } else if sh.frostshot_is_handler() {
-                ("PrintScreen и Win+Shift+S открывают Frostshot".to_string(), ACCENT)
-            } else {
-                (format!("Сейчас PrintScreen открывает: {name}"), ERR)
-            };
-            text(pm, &status, pad, y, small, color);
-            y += gap_line;
-            let mut bx = pad;
-            if !sh.registered {
-                bx += button(pm, rects, Ctl::ShellRegister, bx, y, "Зарегистрировать Frostshot", false) + 8.0 * s;
-            } else {
-                if !sh.frostshot_is_handler() {
-                    bx += button(pm, rects, Ctl::DefaultApps, bx, y, "Выбрать Frostshot в Windows…", false) + 8.0 * s;
+            // Захват.
+            2 => {
+                let label_w = tw("Запасной хоткей", body) + 24.0 * s;
+                for (i, (label, value)) in [("Хоткей", &cfg.hotkey), ("Запасной хоткей", &cfg.fallback_hotkey)].into_iter().enumerate() {
+                    text(pm, label, pad, center_y(y, row, body), body, FG);
+                    let fx = pad + label_w;
+                    let fr = Rect::from_xywh(fx, y, cw - label_w, row).unwrap();
+                    let rec = self.recording == Some(i);
+                    draw::fill_rounded(pm, fr, 6.0 * s, if hover == Some(Ctl::Hotkey(i)) && !rec { FIELD_HOVER } else { FIELD }, 1.0);
+                    if rec {
+                        if let Some(p) = draw::rounded_rect(fr, 6.0 * s) {
+                            draw::stroke_path(pm, &p, ACCENT, 1.0, 1.5 * s, None);
+                        }
+                    }
+                    let (shown, c) = if rec {
+                        ("Нажмите сочетание…  Esc: отмена".to_string(), MUTED)
+                    } else if value.is_empty() {
+                        ("не задан".to_string(), MUTED)
+                    } else {
+                        (value.clone(), FG)
+                    };
+                    text(pm, &shown, fx + 12.0 * s, center_y(y, row, body), body, c);
+                    rects.push((Ctl::Hotkey(i), fr));
+                    y += row + 4.0 * s;
+                    let msg = if rec { self.record_msg.clone() } else { self.hotkey_err[i].clone() };
+                    if let Some(m) = msg {
+                        text(pm, &m, fx, y, small, ERR);
+                        y += gap_line;
+                    }
                 }
-                bx += button(pm, rects, Ctl::ShellUnregister, bx, y, "Убрать регистрацию", false) + 8.0 * s;
+                // PrintScreen через Windows (ms-screenclip).
+                if self.shell.supported {
+                    y += 8.0 * s;
+                    text(pm, "PrintScreen через Windows", pad, y, body, FG);
+                    y += gap_line + 2.0 * s;
+                    let sh = &self.shell;
+                    let name = match sh.handler.as_deref() {
+                        Some(crate::platform::SCREENCLIP_PROGID) => "Frostshot".to_string(),
+                        Some(p) => p.to_string(),
+                        None => "Ножницы Windows".to_string(),
+                    };
+                    let (status, color) = if !sh.key_enabled {
+                        ("Параметр Windows выключен: PrintScreen ловит хоткей Frostshot".to_string(), MUTED)
+                    } else if sh.frostshot_is_handler() {
+                        ("PrintScreen и Win+Shift+S открывают Frostshot".to_string(), ACCENT)
+                    } else {
+                        (format!("Сейчас PrintScreen открывает: {name}"), ERR)
+                    };
+                    text(pm, &status, pad, y, small, color);
+                    y += gap_line;
+                    let mut bx = pad;
+                    if !sh.registered {
+                        bx += button(pm, rects, Ctl::ShellRegister, bx, y, "Зарегистрировать Frostshot", false) + 8.0 * s;
+                    } else {
+                        if !sh.frostshot_is_handler() {
+                            bx += button(pm, rects, Ctl::DefaultApps, bx, y, "Выбрать Frostshot в Windows…", false) + 8.0 * s;
+                        }
+                        bx += button(pm, rects, Ctl::ShellUnregister, bx, y, "Убрать регистрацию", false) + 8.0 * s;
+                    }
+                    button(pm, rects, Ctl::KeyboardSettings, bx, y, "Параметр PrintScreen…", false);
+                    y += row + 14.0 * s;
+                }
+                for (ctl, label, t) in [
+                    (Ctl::Dim, format!("Затемнение вне выделения: {}%", (cfg.dim * 100.0).round()), cfg.dim / 0.9),
+                    (Ctl::Font, format!("Шрифт подсказок: {} px", cfg.ui_font_size.round()), (cfg.ui_font_size - 12.0) / 20.0),
+                ] {
+                    text(pm, &label, pad, y, body, FG);
+                    y += gap_line + 4.0 * s;
+                    let tr = Rect::from_xywh(pad + 8.0 * s, y, cw - 16.0 * s, 24.0 * s).unwrap();
+                    let cy = y + 12.0 * s;
+                    let t = t.clamp(0.0, 1.0);
+                    let kx = tr.left() + tr.width() * t;
+                    draw::line(pm, tr.left(), cy, tr.right(), cy, BORDER, 1.0, 4.0 * s, None);
+                    draw::line(pm, tr.left(), cy, kx, cy, ACCENT, 1.0, 4.0 * s, None);
+                    draw::circle(pm, kx, cy, 8.0 * s, if hover == Some(ctl) || self.slider == Some(ctl) { [255, 255, 255] } else { FG }, 1.0, true, 0.0);
+                    rects.push((ctl, tr));
+                    y += 34.0 * s;
+                }
             }
-            button(pm, rects, Ctl::KeyboardSettings, bx, y, "Параметр PrintScreen…", false);
-            y += row + 10.0 * s;
+            // Клавиши в редакторе.
+            _ => {
+                let col = cw / 2.0;
+                let lh = small * 1.8;
+                let key_w = KEYS.iter().map(|(k, _)| tw(k, small)).fold(0.0f32, f32::max) + 16.0 * s;
+                for (i, (k, d)) in KEYS.iter().enumerate() {
+                    let cx = pad + (i % 2) as f32 * col;
+                    let cy = y + (i / 2) as f32 * lh;
+                    text(pm, k, cx, cy, small, FG);
+                    text(pm, d, cx + key_w, cy, small, MUTED);
+                }
+                y += KEYS.len().div_ceil(2) as f32 * lh;
+            }
         }
-        y += 6.0 * s;
-        for (ctl, label, t) in [
-            (Ctl::Dim, format!("Затемнение вне выделения: {}%", (cfg.dim * 100.0).round()), cfg.dim / 0.9),
-            (Ctl::Font, format!("Шрифт подсказок: {} px", cfg.ui_font_size.round()), (cfg.ui_font_size - 12.0) / 20.0),
-        ] {
-            text(pm, &label, pad, y, body, FG);
-            y += gap_line + 4.0 * s;
-            let tr = Rect::from_xywh(pad + 8.0 * s, y, cw - 16.0 * s, 24.0 * s).unwrap();
-            let cy = y + 12.0 * s;
-            let t = t.clamp(0.0, 1.0);
-            let kx = tr.left() + tr.width() * t;
-            draw::line(pm, tr.left(), cy, tr.right(), cy, BORDER, 1.0, 4.0 * s, None);
-            draw::line(pm, tr.left(), cy, kx, cy, ACCENT, 1.0, 4.0 * s, None);
-            draw::circle(pm, kx, cy, 8.0 * s, if hover == Some(ctl) || self.slider == Some(ctl) { [255, 255, 255] } else { FG }, 1.0, true, 0.0);
-            rects.push((ctl, tr));
-            y += 34.0 * s;
-        }
+        let content_end = y;
 
-        // Клавиши.
-        section(pm, &mut y, "Клавиши в редакторе");
-        let col = cw / 2.0;
-        let lh = small * 1.8;
-        let key_w = KEYS.iter().map(|(k, _)| tw(k, small)).fold(0.0f32, f32::max) + 16.0 * s;
-        for (i, (k, d)) in KEYS.iter().enumerate() {
-            let cx = pad + (i % 2) as f32 * col;
-            let cy = y + (i / 2) as f32 * lh;
-            text(pm, k, cx, cy, small, FG);
-            text(pm, d, cx + key_w, cy, small, MUTED);
-        }
-        y += KEYS.len().div_ceil(2) as f32 * lh + 16.0 * s;
-
-        // Кнопки.
+        // Кнопки внизу: на одной высоте на всех вкладках.
+        let y = (y + 16.0 * s).max(buttons_y);
+        draw::line(pm, pad, y - 12.0 * s, w - pad, y - 12.0 * s, BORDER, 1.0, 1.0 * s, None);
         let mut bx = pad;
         bx += button(pm, rects, Ctl::OpenConfig, bx, y, "Открыть config.toml", false) + 8.0 * s;
-        bx += button(pm, rects, Ctl::Reset, bx, y, "Сбросить", false) + 8.0 * s;
-        button(pm, rects, Ctl::HistoryClear, bx, y, "Очистить историю", false);
+        button(pm, rects, Ctl::Reset, bx, y, "Сбросить", false);
         let done_w = tw("Готово", body) + 28.0 * s;
         button(pm, rects, Ctl::Close, w - pad - done_w, y, "Готово", true);
-        y += row + pad;
-        y
+        (content_end + 16.0 * s, y + row + pad)
     }
 }
