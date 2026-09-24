@@ -28,6 +28,8 @@ pub struct Config {
     pub file_template: String,
     /// Затемнение вне выделения, 0.0..0.9.
     pub dim: f32,
+    /// Уведомление после копирования и сохранения.
+    pub notify: bool,
 }
 
 impl Default for Config {
@@ -48,6 +50,7 @@ impl Default for Config {
             save_on_copy: false,
             file_template: DEFAULT_TEMPLATE.into(),
             dim: 0.5,
+            notify: true,
         }
     }
 }

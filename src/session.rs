@@ -18,6 +18,7 @@ pub enum Action {
     Copy,
     Save,
     QuickSave,
+    SaveProject,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -62,6 +63,19 @@ pub struct Session {
     hover: Option<Btn>,
     font: Option<Arc<FontVec>>,
     pub mods: Mods,
+    dim: f32,
+    save_menu: bool,
+}
+
+fn dim_pixmap(src: &Pixmap, dim: f32) -> Pixmap {
+    let keep = ((1.0 - dim.clamp(0.0, 0.9)) * 256.0) as u32;
+    let mut p = src.clone();
+    for px in p.data_mut().chunks_exact_mut(4) {
+        px[0] = ((px[0] as u32 * keep) >> 8) as u8;
+        px[1] = ((px[1] as u32 * keep) >> 8) as u8;
+        px[2] = ((px[2] as u32 * keep) >> 8) as u8;
+    }
+    p
 }
 
 fn dist(a: Pt, b: Pt) -> f32 {
@@ -99,19 +113,7 @@ fn square(a: Pt, b: Pt) -> Pt {
 
 impl Session {
     pub fn new(shots: Vec<MonitorShot>, scales: Vec<f32>, dim: f32, color: u32, width: f32, font: Option<Arc<FontVec>>) -> Self {
-        let keep = ((1.0 - dim.clamp(0.0, 0.9)) * 256.0) as u32;
-        let dimmed: Vec<Pixmap> = shots
-            .iter()
-            .map(|s| {
-                let mut p = s.pixmap.clone();
-                for px in p.data_mut().chunks_exact_mut(4) {
-                    px[0] = ((px[0] as u32 * keep) >> 8) as u8;
-                    px[1] = ((px[1] as u32 * keep) >> 8) as u8;
-                    px[2] = ((px[2] as u32 * keep) >> 8) as u8;
-                }
-                p
-            })
-            .collect();
+        let dimmed: Vec<Pixmap> = shots.iter().map(|s| dim_pixmap(&s.pixmap, dim)).collect();
         let n = shots.len();
         Self {
             base: dimmed.clone(),
@@ -134,7 +136,93 @@ impl Session {
             hover: None,
             font,
             mods: Mods::default(),
+            dim,
+            save_menu: false,
         }
+    }
+
+    /// Геометрия снимков в глобальных координатах (x, y, w, h).
+    pub fn monitor_rects(&self) -> Vec<(i32, i32, u32, u32)> {
+        self.shots.iter().map(|s| (s.x, s.y, s.width(), s.height())).collect()
+    }
+
+    /// Монитор с выделением и его прямоугольник.
+    pub fn active_rect(&self) -> Option<(i32, i32, u32, u32)> {
+        let m = self.active?;
+        let s = &self.shots[m];
+        Some((s.x, s.y, s.width(), s.height()))
+    }
+
+    /// Освободить производные буферы (затемнение, кадры): сессия хранится до повторного открытия.
+    pub fn hibernate(&mut self) {
+        self.commit_text();
+        self.dimmed = Vec::new();
+        self.base = Vec::new();
+        self.frame = Vec::new();
+    }
+
+    /// Вернуть сессию к показу: буферы заново, временное состояние сброшено, разметка на месте.
+    pub fn wake(&mut self) {
+        if self.dimmed.len() != self.shots.len() {
+            self.dimmed = self.shots.iter().map(|s| dim_pixmap(&s.pixmap, self.dim)).collect();
+            self.base = self.dimmed.clone();
+            self.frame = self.dimmed.clone();
+        }
+        let n = self.shots.len();
+        self.base_dirty = vec![true; n];
+        self.dirty = vec![true; n];
+        self.drag = Drag::None;
+        self.cursor = None;
+        self.hover = None;
+        self.palette_open = false;
+        self.save_menu = false;
+        self.mods = Mods::default();
+        self.sync();
+    }
+
+    /// Проект `.frost`: снимок монитора с выделением, маска, фигуры.
+    pub fn to_project(&mut self) -> Result<Vec<u8>, String> {
+        self.commit_text();
+        let mon = self.active.ok_or("нет выделения")?;
+        let sel = self.sel.as_ref().ok_or("нет выделения")?;
+        let shot = &self.shots[mon].pixmap;
+        let png = shot.encode_png().map_err(|e| e.to_string())?;
+        let header = crate::project::Header {
+            version: crate::project::VERSION,
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            width: shot.width(),
+            height: shot.height(),
+            png_len: png.len(),
+            selection: sel.ops.iter().map(crate::project::op_to_dto).collect(),
+            shapes: self.shapes.clone(),
+            color: self.color,
+            line_width: self.width,
+        };
+        crate::project::encode(&header, &png)
+    }
+
+    /// Сессия из проекта; снимок ставится в левый верхний угол монитора (x, y).
+    pub fn from_project(bytes: &[u8], x: i32, y: i32, scale: f32, dim: f32, font: Option<Arc<FontVec>>) -> Result<Self, String> {
+        let (h, png) = crate::project::decode(bytes)?;
+        let pixmap = Pixmap::decode_png(png).map_err(|e| format!("Повреждённый снимок в проекте: {e}"))?;
+        if (pixmap.width(), pixmap.height()) != (h.width, h.height) {
+            return Err("Повреждённый проект: размер снимка не совпадает".into());
+        }
+        let (w, hh) = (pixmap.width(), pixmap.height());
+        let shot = MonitorShot { x, y, pixmap };
+        let mut s = Session::new(vec![shot], vec![scale], dim, h.color, h.line_width, font);
+        let mut sel = Selection::new(w, hh);
+        sel.ops = h.selection.iter().filter_map(crate::project::dto_to_op).collect();
+        sel.touch();
+        sel.ensure();
+        if sel.is_empty() {
+            return Err("В проекте пустое выделение".into());
+        }
+        s.sel = Some(sel);
+        s.active = Some(0);
+        s.shapes = h.shapes;
+        s.base_dirty = vec![true];
+        Ok(s)
     }
 
     pub fn shot_size(&self, mon: usize) -> (u32, u32) {
@@ -174,7 +262,7 @@ impl Session {
         let mon = self.active?;
         let b = self.sel.as_ref()?.bbox()?;
         let (w, h) = self.shot_size(mon);
-        Some(ui::layout(b.rect(), w as f32, h as f32, self.scales[mon], self.palette_open))
+        Some(ui::layout(b.rect(), w as f32, h as f32, self.scales[mon], self.palette_open, self.save_menu))
     }
 
     fn commit_text(&mut self) {
@@ -228,7 +316,18 @@ impl Session {
             Btn::Undo => self.undo(),
             Btn::Upload => {}
             Btn::Copy => return Action::Copy,
-            Btn::Save => return Action::Save,
+            Btn::Save => {
+                self.save_menu = !self.save_menu;
+                self.palette_open = false;
+            }
+            Btn::SavePng => {
+                self.save_menu = false;
+                return Action::Save;
+            }
+            Btn::SaveProject => {
+                self.save_menu = false;
+                return Action::SaveProject;
+            }
             Btn::Close => return Action::Close,
         }
         self.mark_sel();
@@ -348,8 +447,9 @@ impl Session {
                 }
             }
         }
-        if self.palette_open {
+        if self.palette_open || self.save_menu {
             self.palette_open = false;
+            self.save_menu = false;
             self.mark_sel();
         }
         self.commit_text();
@@ -532,8 +632,9 @@ impl Session {
                 if !matches!(self.drag, Drag::None) {
                     return self.cancel_drag();
                 }
-                if self.palette_open {
+                if self.palette_open || self.save_menu {
                     self.palette_open = false;
+                    self.save_menu = false;
                     self.mark_sel();
                     return Action::None;
                 }

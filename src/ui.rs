@@ -37,6 +37,8 @@ pub enum Btn {
     Save,
     Close,
     Swatch(usize),
+    SavePng,
+    SaveProject,
 }
 
 impl Btn {
@@ -47,9 +49,9 @@ impl Btn {
             Btn::Undo => "Отменить (Ctrl+Z)",
             Btn::Upload => "Облако (скоро)",
             Btn::Copy => "Копировать (Ctrl+C, Enter)",
-            Btn::Save => "Сохранить (Ctrl+S, быстро Ctrl+Shift+S)",
+            Btn::Save => "Сохранить…",
             Btn::Close => "Закрыть (Esc)",
-            Btn::Swatch(_) => "",
+            Btn::Swatch(_) | Btn::SavePng | Btn::SaveProject => "",
         }
     }
 }
@@ -76,7 +78,7 @@ fn ov(a: Rect, b: Rect) -> bool {
     a.left() < b.right() && b.left() < a.right() && a.top() < b.bottom() && b.top() < a.bottom()
 }
 
-pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool) -> Layout {
+pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_menu: bool) -> Layout {
     let b = (32.0 * s).round();
     let pad = (4.0 * s).round();
     let gap = (8.0 * s).round();
@@ -122,6 +124,21 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool) -> Layou
         out.buttons.push((*it, Rect::from_xywh(hx + pad + i as f32 * b, hy + pad, b, b).unwrap()));
     }
 
+    // Меню сохранения над (или под) панелью действий.
+    if save_menu {
+        let mh_item = b;
+        let items = [Btn::SavePng, Btn::SaveProject];
+        let mw_ = (300.0 * s * ui_font() / 18.0).round();
+        let mhh = items.len() as f32 * mh_item + 2.0 * pad;
+        let save_r = out.buttons.iter().find(|(b, _)| *b == Btn::Save).unwrap().1;
+        let mx = (save_r.right() - mw_).clamp(0.0, (mw - mw_).max(0.0));
+        let my = if hpanel.top() - gap - mhh >= 0.0 { hpanel.top() - gap - mhh } else { hpanel.bottom() + gap };
+        out.panels.push(Rect::from_xywh(mx, my, mw_, mhh).unwrap());
+        for (i, it) in items.iter().enumerate() {
+            out.buttons.push((*it, Rect::from_xywh(mx + pad, my + pad + i as f32 * mh_item, mw_ - 2.0 * pad, mh_item).unwrap()));
+        }
+    }
+
     // Палитра рядом с кнопкой цвета.
     if palette_open {
         let cy = out.buttons.iter().find(|(b, _)| *b == Btn::Color).unwrap().1.top() - pad;
@@ -163,7 +180,19 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
             _ if active => WHITE,
             _ => FG,
         };
-        icon(pm, *btn, *r, fg, st);
+        match (btn, st.font) {
+            (Btn::SavePng | Btn::SaveProject, Some(font)) => {
+                let (label, hint) = if *btn == Btn::SavePng { ("PNG…", "Ctrl+S") } else { ("Проект .frost…", "для доработки") };
+                let size = ui_font() * s;
+                let ty = r.top() + (r.height() - draw::line_height(font, size)) / 2.0;
+                draw::draw_text(pm, font, label, r.left() + 10.0 * s, ty, size, FG, 1.0, None);
+                let hs = (ui_font() - 3.0) * s;
+                let hw = draw::text_size(font, hint, hs).0;
+                let hy = r.top() + (r.height() - draw::line_height(font, hs)) / 2.0;
+                draw::draw_text(pm, font, hint, r.right() - hw - 10.0 * s, hy, hs, MUTED, 1.0, None);
+            }
+            _ => icon(pm, *btn, *r, fg, st),
+        }
     }
     if let (Some(h), Some(font)) = (st.hover, st.font) {
         let tip = h.tooltip();
@@ -315,6 +344,7 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
             ln(pm, (10.0, 10.0), (22.0, 22.0), w, 1.0);
             ln(pm, (22.0, 10.0), (10.0, 22.0), w, 1.0);
         }
+        Btn::SavePng | Btn::SaveProject => {}
     }
 }
 

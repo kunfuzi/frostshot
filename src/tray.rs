@@ -5,8 +5,11 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 pub struct Tray {
     icon: TrayIcon,
     capture: MenuItem,
+    last: MenuItem,
     autostart: CheckMenuItem,
     pub capture_id: MenuId,
+    pub last_id: MenuId,
+    pub open_project_id: MenuId,
     pub folder_id: MenuId,
     pub settings_id: MenuId,
     pub autostart_id: MenuId,
@@ -82,6 +85,8 @@ fn capture_label(hotkey: &str) -> String {
 impl Tray {
     pub fn build(hotkey_label: &str, autostart: bool) -> Result<Tray, String> {
         let capture = MenuItem::new(capture_label(hotkey_label), true, None);
+        let last = MenuItem::new("Открыть последний снимок", false, None);
+        let open_project = MenuItem::new("Открыть проект…", true, None);
         let folder = MenuItem::new("Открыть папку со снимками", true, None);
         let settings = MenuItem::new("Настройки…", true, None);
         let auto = CheckMenuItem::new("Запускать при входе в систему", true, autostart, None);
@@ -89,6 +94,8 @@ impl Tray {
         let menu = Menu::new();
         menu.append_items(&[
             &capture,
+            &last,
+            &open_project,
             &folder,
             &PredefinedMenuItem::separator(),
             &settings,
@@ -110,11 +117,14 @@ impl Tray {
         Ok(Tray {
             icon: tray,
             capture_id: capture.id().clone(),
+            last_id: last.id().clone(),
+            open_project_id: open_project.id().clone(),
             folder_id: folder.id().clone(),
             settings_id: settings.id().clone(),
             autostart_id: auto.id().clone(),
             quit_id: quit.id().clone(),
             capture,
+            last,
             autostart: auto,
         })
     }
@@ -122,6 +132,10 @@ impl Tray {
     pub fn set_hotkey_label(&self, hotkey_label: &str) {
         self.capture.set_text(capture_label(hotkey_label));
         let _ = self.icon.set_tooltip(Some(format!("Frostshot: {hotkey_label}")));
+    }
+
+    pub fn set_last_enabled(&self, on: bool) {
+        self.last.set_enabled(on);
     }
 
     pub fn set_autostart(&self, on: bool) {

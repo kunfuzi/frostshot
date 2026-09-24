@@ -27,6 +27,7 @@ const WIDTH: f64 = 700.0;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Ctl {
     Autostart,
+    Notify,
     SaveOnCopy,
     DirChange,
     DirOpen,
@@ -205,6 +206,10 @@ impl Settings {
             Some(Ctl::Autostart) => {
                 cfg.autostart = !cfg.autostart;
                 fx.autostart = Some(cfg.autostart);
+                fx.save = true;
+            }
+            Some(Ctl::Notify) => {
+                cfg.notify = !cfg.notify;
                 fx.save = true;
             }
             Some(Ctl::SaveOnCopy) => {
@@ -411,6 +416,7 @@ impl Settings {
         section(pm, &mut y, "Общие");
         for (ctl, on, label) in [
             (Ctl::Autostart, cfg.autostart, "Запускать при входе в систему"),
+            (Ctl::Notify, cfg.notify, "Уведомление после снимка (клик: доработать)"),
             (Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку"),
         ] {
             let bs = (f + 2.0) * s;

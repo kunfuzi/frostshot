@@ -171,6 +171,34 @@ pub fn run(dir: &Path) -> i32 {
     let frame = s.render(last).clone();
     output::save_png(&frame, &dir.join("frame_lasso.png")).ok();
 
+    // Проект .frost: сохранение и загрузка дают тот же результат.
+    let before = s.result().unwrap();
+    let bytes = s.to_project().expect("to_project");
+    output::save_png(&before, &dir.join("project_before.png")).ok();
+    std::fs::write(dir.join("roundtrip.frost"), &bytes).ok();
+    match Session::from_project(&bytes, 0, 0, 1.0, 0.5, draw::load_font().map(Arc::new)) {
+        Ok(mut p) => {
+            let after = p.result().unwrap();
+            c.ok("project roundtrip same image", before.data() == after.data());
+            let frame = p.render(0).clone();
+            output::save_png(&frame, &dir.join("frame_project.png")).ok();
+        }
+        Err(e) => c.ok(&format!("project roundtrip ({e})"), false),
+    }
+    c.ok("garbage is not a project", Session::from_project(b"PNG junk", 0, 0, 1.0, 0.5, None).is_err());
+    let mut cut = bytes.clone();
+    cut.truncate(bytes.len() - 100);
+    c.ok("truncated project rejected", Session::from_project(&cut, 0, 0, 1.0, 0.5, None).is_err());
+
+    // Сон и пробуждение сессии сохраняют разметку и выделение.
+    s.hibernate();
+    s.wake();
+    c.ok("hibernate/wake keeps result", s.result().is_some_and(|r| r.data() == before.data()));
+    s.render(last);
+
+    // Меню сохранения: кнопка открывает меню, пункт даёт действие.
+    s.on_key(Some(KeyCode::KeyV), None, None);
+
     // 7. Правый клик сбрасывает, второй закрывает.
     c.ok("right click resets selection", s.on_right_press() == Action::None && s.result().is_none());
     c.ok("second right click closes", s.on_right_press() == Action::Close);

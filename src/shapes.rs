@@ -3,6 +3,7 @@
 
 use crate::draw::{self, Rgb};
 use ab_glyph::FontVec;
+use serde::{Deserialize, Serialize};
 use tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,7 +54,7 @@ impl Tool {
 
 pub type Pt = (f32, f32);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Kind {
     Pencil(Vec<Pt>),
     Marker(Vec<Pt>),
@@ -64,7 +65,7 @@ pub enum Kind {
     Pixelate(Pt, Pt),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Shape {
     pub kind: Kind,
     pub color: Rgb,

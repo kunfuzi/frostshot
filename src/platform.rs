@@ -179,3 +179,66 @@ pub fn open_file(path: &Path) {
 pub fn log_path() -> Option<std::path::PathBuf> {
     directories::ProjectDirs::from("", "", "Frostshot").map(|d| d.data_local_dir().join("frostshot.log"))
 }
+
+/// Рабочая область (без панели задач) монитора, содержащего точку: l, t, r, b.
+pub fn work_area(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+        // SAFETY: MONITORINFO с корректным cbSize, hmonitor от MonitorFromPoint.
+        unsafe {
+            let hm = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+            let mut mi: MONITORINFO = std::mem::zeroed();
+            mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(hm, &mut mi) != 0 {
+                let r = mi.rcWork;
+                return Some((r.left, r.top, r.right, r.bottom));
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (x, y);
+        None
+    }
+}
+
+/// Окно не активируется по клику (уведомление не отбирает фокус у текущей программы).
+pub fn make_no_activate(window: &winit::window::Window) {
+    #[cfg(windows)]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};
+        if let Ok(h) = window.window_handle() {
+            if let RawWindowHandle::Win32(w) = h.as_raw() {
+                let hwnd = w.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                // SAFETY: hwnd живого окна winit.
+                unsafe {
+                    let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE as isize);
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+/// Показать окно без активации.
+pub fn show_no_activate(window: &winit::window::Window) {
+    #[cfg(windows)]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
+        if let Ok(h) = window.window_handle() {
+            if let RawWindowHandle::Win32(w) = h.as_raw() {
+                // SAFETY: hwnd живого окна winit.
+                unsafe { ShowWindow(w.hwnd.get() as windows_sys::Win32::Foundation::HWND, SW_SHOWNOACTIVATE) };
+                return;
+            }
+        }
+    }
+    window.set_visible(true);
+}

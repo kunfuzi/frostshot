@@ -14,9 +14,6 @@ impl MonitorShot {
     pub fn height(&self) -> u32 {
         self.pixmap.height()
     }
-    pub fn contains_global(&self, gx: i32, gy: i32) -> bool {
-        gx >= self.x && gy >= self.y && gx < self.x + self.width() as i32 && gy < self.y + self.height() as i32
-    }
 }
 
 /// Снимок всех мониторов. Делается до показа оверлея (инвариант 4).
