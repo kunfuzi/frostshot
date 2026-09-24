@@ -44,8 +44,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
-/// Задержка наведения на значок до появления панели истории и задержка скрытия.
-const POPUP_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
+/// Через сколько панель истории прячется после ухода курсора.
 const POPUP_HIDE: std::time::Duration = std::time::Duration::from_millis(450);
 
 /// Сколько хранить последний снимок для повторного открытия.
@@ -106,11 +105,8 @@ struct App {
     pins: Vec<pin::Pin>,
     /// Панель истории у значка в трее и её таймеры.
     popup: Option<history_popup::HistoryPopup>,
-    /// Где значок в трее (центр X, верх Y) и когда на него навели курсор.
+    /// Где значок в трее (центр X, верх Y): панель истории встаёт над ним.
     tray_anchor: Option<(i32, i32)>,
-    tray_hover_since: Option<std::time::Instant>,
-    /// После клика по значку панель истории не показываем, пока курсор не уйдёт с него.
-    tray_hover_blocked: bool,
     popup_hide_at: Option<std::time::Instant>,
     toast_pos: (f32, f32),
     pending_save: Option<Pending>,
@@ -341,36 +337,20 @@ impl ApplicationHandler<UserEvent> for App {
                     app.start_capture(el);
                 }
             }
-            UserEvent::Tray(TrayIconEvent::Click { button, button_state, .. }) => {
-                // Клик по значку (меню, захват): панель истории не нужна и не должна мешать.
-                app.tray_hover_since = None;
-                app.tray_hover_blocked = true;
+            UserEvent::Tray(TrayIconEvent::Click { button, button_state, rect, .. }) => {
+                // Запоминаем, где значок: панель истории из меню встанет над ним.
+                app.tray_anchor = Some(((rect.position.x + rect.size.width as f64 / 2.0) as i32, rect.position.y as i32));
                 app.popup = None;
                 if button == TrayButton::Left && button_state == MouseButtonState::Up {
                     app.start_capture(el);
-                }
-            }
-            UserEvent::Tray(TrayIconEvent::Enter { rect, .. } | TrayIconEvent::Move { rect, .. }) => {
-                app.tray_anchor = Some(((rect.position.x + rect.size.width as f64 / 2.0) as i32, rect.position.y as i32));
-                if app.popup.is_some() {
-                    app.popup_hide_at = None;
-                } else if app.tray_hover_since.is_none() && !app.tray_hover_blocked {
-                    app.tray_hover_since = Some(std::time::Instant::now());
-                }
-            }
-            UserEvent::Tray(TrayIconEvent::Leave { .. }) => {
-                app.tray_hover_since = None;
-                app.tray_hover_blocked = false;
-                if app.popup.is_some() {
-                    app.popup_hide_at = Some(std::time::Instant::now() + POPUP_HIDE);
                 }
             }
             UserEvent::Tray(_) => {}
             UserEvent::Menu(e) => {
                 let Some(t) = &app.tray else { return };
                 if e.id == t.history_id {
-                    // Из меню: у курсора (меню открывалось там), держим дольше, пока не наведут.
-                    let anchor = platform::cursor_pos().or(app.tray_anchor);
+                    // Над значком в трее (меню открывалось у него), держим, пока не наведут.
+                    let anchor = app.tray_anchor.or_else(platform::cursor_pos);
                     app.show_history_popup(el, anchor);
                     app.popup_hide_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
                     return;
@@ -448,12 +428,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             hint_d = ov.session.width_hint_deadline();
         }
-        // Панель истории: открыть после задержки наведения, спрятать после ухода курсора.
-        if self.tray_hover_since.is_some_and(|t| now >= t + POPUP_DELAY) {
-            self.tray_hover_since = None;
-            let anchor = self.tray_anchor;
-            self.guarded(|app| app.show_history_popup(el, anchor));
-        }
+        // Панель истории прячется после ухода курсора.
         if self.popup_hide_at.is_some_and(|t| now >= t) {
             self.popup_hide_at = None;
             self.popup = None;
@@ -465,10 +440,9 @@ impl ApplicationHandler<UserEvent> for App {
                 frame_d = Some(now + std::time::Duration::from_millis(16));
             }
         }
-        let hover_d = self.tray_hover_since.map(|t| t + POPUP_DELAY);
         let toast_d = self.toast.as_ref().and_then(|t| t.deadline());
         let last_d = self.last.as_ref().map(|_| self.last_at + LAST_TTL);
-        match toast_d.into_iter().chain(last_d).chain(hint_d).chain(frame_d).chain(hover_d).chain(self.popup_hide_at).min() {
+        match toast_d.into_iter().chain(last_d).chain(hint_d).chain(frame_d).chain(self.popup_hide_at).min() {
             Some(d) => el.set_control_flow(ControlFlow::WaitUntil(d)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -574,8 +548,6 @@ fn main() {
         pins: Vec::new(),
         popup: None,
         tray_anchor: None,
-        tray_hover_since: None,
-        tray_hover_blocked: false,
         popup_hide_at: None,
         toast_pos: (0.0, 0.0),
         pending_save: None,

@@ -520,7 +520,7 @@ impl Settings {
                 text(pm, "Почта, телефоны, номера карт и счетов, ключи, пароли", pad + (f + 14.0) * s, y - 6.0 * s, small, MUTED);
                 y += gap_line;
                 checkbox(pm, rects, &mut y, Ctl::History, cfg.history, "Хранить историю снимков");
-                text(pm, "10 последних за 7 дней, панель при наведении на значок в трее", pad + (f + 14.0) * s, y - 6.0 * s, small, MUTED);
+                text(pm, "10 последних за 7 дней: меню трея > «История снимков…»", pad + (f + 14.0) * s, y - 6.0 * s, small, MUTED);
                 y += gap_line;
                 button(pm, rects, Ctl::HistoryClear, pad, y, "Очистить историю", false);
                 y += row + 8.0 * s;
