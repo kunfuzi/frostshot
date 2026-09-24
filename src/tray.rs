@@ -16,7 +16,7 @@ pub struct Tray {
     pub quit_id: MenuId,
 }
 
-/// Иконка: тёмно-синий градиент, уголки кропа и ледяной кристалл из четырёх граней.
+/// Иконка: курсор выделяет область (два уголка кропа), рядом три осколка льда.
 /// Рисуется в сетке 128x128 и масштабируется; в мелких размерах уголки толще.
 pub fn icon_pixmap(size: u32) -> Pixmap {
     use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Point, SpreadMode, Transform};
@@ -24,8 +24,20 @@ pub fn icon_pixmap(size: u32) -> Pixmap {
     let s = size as f32;
     let k = s / 128.0;
     let small = size <= 24;
+    let p = |x: f32, y: f32| (x * k, y * k);
+    let fill = |pm: &mut Pixmap, pts: &[(f32, f32)], c: [u8; 3]| {
+        let mut pb = PathBuilder::new();
+        pb.move_to(pts[0].0, pts[0].1);
+        for q in &pts[1..] {
+            pb.line_to(q.0, q.1);
+        }
+        pb.close();
+        if let Some(path) = pb.finish() {
+            pm.fill_path(&path, &crate::draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+        }
+    };
 
-    // Фон: градиент от яркого синего слева сверху к глубокому снизу справа.
+    // Фон: яркий голубой слева сверху, глубокий синий справа снизу.
     if let Some(path) = crate::draw::rounded_rect(Rect::from_xywh(0.0, 0.0, s, s).unwrap(), 28.0 * k) {
         let mut paint = Paint::default();
         paint.anti_alias = true;
@@ -33,62 +45,55 @@ pub fn icon_pixmap(size: u32) -> Pixmap {
             Point::from_xy(0.0, 0.0),
             Point::from_xy(s, s),
             vec![
-                GradientStop::new(0.0, Color::from_rgba8(0x2f, 0x7f, 0xe0, 255)),
-                GradientStop::new(1.0, Color::from_rgba8(0x0a, 0x33, 0x7a, 255)),
+                GradientStop::new(0.0, Color::from_rgba8(0x1c, 0x9c, 0xf5, 255)),
+                GradientStop::new(1.0, Color::from_rgba8(0x0b, 0x3c, 0xa8, 255)),
             ],
             SpreadMode::Pad,
             Transform::identity(),
         )
-        .unwrap_or(tiny_skia::Shader::SolidColor(Color::from_rgba8(0x1f, 0x5f, 0xa8, 255)));
+        .unwrap_or(tiny_skia::Shader::SolidColor(Color::from_rgba8(0x16, 0x6c, 0xd8, 255)));
         pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
     }
 
-    // Уголки кропа.
-    let corner = [0xd6, 0xec, 0xff];
-    let (m, len) = (22.0, 22.0);
-    let w = if small { 12.0 } else { 9.0 } * k;
-    let p = |x: f32, y: f32| (x * k, y * k);
-    for (cx, cy, dx, dy) in [(m, m, 1.0, 1.0), (128.0 - m, m, -1.0, 1.0), (m, 128.0 - m, 1.0, -1.0), (128.0 - m, 128.0 - m, -1.0, -1.0)] {
+    // Два уголка кропа по диагонали.
+    let corner = [0xd8, 0xf0, 0xff];
+    let w = if small { 12.0 } else { 9.5 } * k;
+    for pts in [[(24.0, 52.0), (24.0, 24.0), (50.0, 24.0)], [(104.0, 78.0), (104.0, 104.0), (78.0, 104.0)]] {
         let mut pb = PathBuilder::new();
-        let a = p(cx, cy + dy * len);
-        let b = p(cx, cy);
-        let c = p(cx + dx * len, cy);
+        let a = p(pts[0].0, pts[0].1);
         pb.move_to(a.0, a.1);
-        pb.line_to(b.0, b.1);
-        pb.line_to(c.0, c.1);
+        for q in &pts[1..] {
+            let q = p(q.0, q.1);
+            pb.line_to(q.0, q.1);
+        }
         if let Some(path) = pb.finish() {
             crate::draw::stroke_path(&mut pm, &path, corner, 1.0, w, None);
         }
     }
 
-    // Кристалл: ромб, четыре грани разной яркости, как у огранённого льда.
-    let (top, right, bottom, left, mid) = (p(64.0, 30.0), p(92.0, 64.0), p(64.0, 98.0), p(36.0, 64.0), p(64.0, 60.0));
-    let facets: [([(f32, f32); 3], [u8; 3]); 4] = [
-        ([top, left, mid], [0xbf, 0xe3, 0xff]),
-        ([top, right, mid], [0xff, 0xff, 0xff]),
-        ([left, bottom, mid], [0x6f, 0xb6, 0xf2]),
-        ([right, bottom, mid], [0x9c, 0xd0, 0xfa]),
-    ];
-    for (pts, c) in facets {
-        let mut pb = PathBuilder::new();
-        pb.move_to(pts[0].0, pts[0].1);
-        pb.line_to(pts[1].0, pts[1].1);
-        pb.line_to(pts[2].0, pts[2].1);
-        pb.close();
-        if let Some(path) = pb.finish() {
-            pm.fill_path(&path, &crate::draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
-        }
-    }
-    // Лёгкий контур, чтобы кристалл не сливался с фоном в мелком размере.
-    let mut pb = PathBuilder::new();
-    pb.move_to(top.0, top.1);
-    pb.line_to(right.0, right.1);
-    pb.line_to(bottom.0, bottom.1);
-    pb.line_to(left.0, left.1);
-    pb.close();
-    if let Some(path) = pb.finish() {
-        crate::draw::stroke_path(&mut pm, &path, [0xe8, 0xf6, 0xff], 0.9, (1.6 * k).max(0.8), None);
-    }
+    // Три осколка льда справа от острия: вытянутые ромбы из светлой и тёмной половин.
+    let shard = |pm: &mut Pixmap, base: (f32, f32), tip: (f32, f32), width: f32| {
+        let (dx, dy) = (tip.0 - base.0, tip.1 - base.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        let (nx, ny) = (-dy / len * width / 2.0, dx / len * width / 2.0);
+        let mid = (base.0 + dx * 0.42, base.1 + dy * 0.42);
+        let (b, t) = (p(base.0, base.1), p(tip.0, tip.1));
+        let l = p(mid.0 + nx, mid.1 + ny);
+        let r = p(mid.0 - nx, mid.1 - ny);
+        fill(pm, &[b, l, t], [0xa8, 0xe6, 0xff]);
+        fill(pm, &[b, r, t], [0x4f, 0xc2, 0xf6]);
+    };
+    shard(&mut pm, (60.0, 46.0), (82.0, 16.0), 12.0);
+    shard(&mut pm, (66.0, 56.0), (98.0, 40.0), 10.0);
+    shard(&mut pm, (54.0, 40.0), (58.0, 26.0), 7.0);
+
+    // Курсор: классический указатель Windows, остриё слева вверху; правая половина
+    // чуть голубее, как грань льда.
+    let (ax, ay, sc) = (38.0, 36.0, 2.3);
+    let a = |x: f32, y: f32| p(ax + x * sc, ay + y * sc);
+    let arrow = [a(0.0, 0.0), a(0.0, 24.0), a(6.0, 18.5), a(10.0, 27.5), a(14.0, 25.5), a(10.2, 17.0), a(17.0, 17.0)];
+    fill(&mut pm, &arrow, [0xff, 0xff, 0xff]);
+    fill(&mut pm, &[a(0.0, 0.0), a(17.0, 17.0), a(10.2, 17.0), a(6.0, 18.5)], [0xdd, 0xf0, 0xff]);
     pm
 }
 
