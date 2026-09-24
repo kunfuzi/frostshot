@@ -123,6 +123,149 @@ impl Shape {
     }
 }
 
+/// Расстояние от точки до отрезка.
+pub fn seg_dist(p: Pt, a: Pt, b: Pt) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    let (qx, qy) = (a.0 + dx * t - p.0, a.1 + dy * t - p.1);
+    (qx * qx + qy * qy).sqrt()
+}
+
+fn norm(a: Pt, b: Pt) -> (f32, f32, f32, f32) {
+    (a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1))
+}
+
+/// Правка готовых фигур в режиме выделения: попадание, габарит, ручки, сдвиг.
+impl Shape {
+    /// Габарит (l, t, r, b) в координатах снимка, с учётом толщины линии.
+    pub fn bounds(&self, font: Option<&FontVec>) -> (f32, f32, f32, f32) {
+        let pad = match &self.kind {
+            Kind::Marker(_) => marker_width(self.width) / 2.0,
+            _ => self.width / 2.0,
+        };
+        let grow = |(l, t, r, b): (f32, f32, f32, f32), d: f32| (l - d, t - d, r + d, b + d);
+        match &self.kind {
+            Kind::Pencil(p) | Kind::Marker(p) => {
+                let mut bb = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for q in p {
+                    bb = (bb.0.min(q.0), bb.1.min(q.1), bb.2.max(q.0), bb.3.max(q.1));
+                }
+                grow(bb, pad)
+            }
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Ellipse(a, b) | Kind::Ruler(a, b) => grow(norm(*a, *b), pad),
+            Kind::FilledRect(a, b) | Kind::Pixelate(a, b) => norm(*a, *b),
+            Kind::Text { at, text } => {
+                let size = font_size(self.width);
+                let (w, h) = font.map_or((text.chars().count() as f32 * size * 0.55, size * 1.3), |f| draw::text_size(f, text, size));
+                (at.0, at.1, at.0 + w, at.1 + h)
+            }
+            Kind::Counter { at, tip, .. } => {
+                let r = counter_radius(self.width);
+                let (mut l, mut t, mut rr, mut b) = (at.0 - r, at.1 - r, at.0 + r, at.1 + r);
+                if let Some(q) = tip {
+                    (l, t, rr, b) = (l.min(q.0), t.min(q.1), rr.max(q.0), b.max(q.1));
+                }
+                (l, t, rr, b)
+            }
+        }
+    }
+
+    /// Попадает ли точка p в фигуру; tol: запас в пикселях снимка.
+    /// Контурные фигуры ловятся по линии, закрашенные по площади.
+    pub fn hit(&self, p: Pt, tol: f32, font: Option<&FontVec>) -> bool {
+        let near_poly = |pts: &[Pt], d: f32| match pts {
+            [] => false,
+            [a] => seg_dist(p, *a, *a) <= d,
+            _ => pts.windows(2).any(|w| seg_dist(p, w[0], w[1]) <= d),
+        };
+        let inside = |(l, t, r, b): (f32, f32, f32, f32)| p.0 >= l - tol && p.0 <= r + tol && p.1 >= t - tol && p.1 <= b + tol;
+        let d = self.width / 2.0 + tol;
+        match &self.kind {
+            Kind::Pencil(pts) => near_poly(pts, d),
+            Kind::Marker(pts) => near_poly(pts, marker_width(self.width) / 2.0 + tol),
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Ruler(a, b) => seg_dist(p, *a, *b) <= d.max(6.0 + tol),
+            Kind::Rect(a, b) => {
+                let (l, t, r, bb) = norm(*a, *b);
+                near_poly(&[(l, t), (r, t), (r, bb), (l, bb), (l, t)], d)
+            }
+            Kind::Ellipse(a, b) => {
+                let (l, t, r, bb) = norm(*a, *b);
+                let (cx, cy, rx, ry) = ((l + r) / 2.0, (t + bb) / 2.0, ((r - l) / 2.0).max(0.5), ((bb - t) / 2.0).max(0.5));
+                let k = (((p.0 - cx) / rx).powi(2) + ((p.1 - cy) / ry).powi(2)).sqrt();
+                (k - 1.0).abs() * rx.min(ry) <= d
+            }
+            Kind::FilledRect(a, b) | Kind::Pixelate(a, b) => inside(norm(*a, *b)),
+            Kind::Text { .. } => inside(self.bounds(font)),
+            Kind::Counter { at, tip, .. } => {
+                let r = counter_radius(self.width);
+                seg_dist(p, *at, *at) <= r + tol || tip.is_some_and(|q| seg_dist(p, *at, q) <= r * 0.3 + tol)
+            }
+        }
+    }
+
+    /// Ручки для изменения: концы линии, углы рамки, кружок и остриё счётчика.
+    pub fn handles(&self) -> Vec<Pt> {
+        match &self.kind {
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Ruler(a, b) => vec![*a, *b],
+            Kind::Rect(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) | Kind::Pixelate(a, b) => {
+                let (l, t, r, bb) = norm(*a, *b);
+                vec![(l, t), (r, t), (r, bb), (l, bb)]
+            }
+            Kind::Counter { at, tip: Some(q), .. } => vec![*at, *q],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Передвинуть ручку i в точку p (номера как в handles()).
+    pub fn set_handle(&mut self, i: usize, p: Pt) {
+        match &mut self.kind {
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Ruler(a, b) => *(if i == 0 { a } else { b }) = p,
+            Kind::Rect(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) | Kind::Pixelate(a, b) => {
+                let (mut l, mut t, mut r, mut bb) = norm(*a, *b);
+                match i {
+                    0 => (l, t) = p,
+                    1 => (r, t) = p,
+                    2 => (r, bb) = p,
+                    _ => (l, bb) = p,
+                }
+                (*a, *b) = ((l, t), (r, bb));
+            }
+            Kind::Counter { at, tip: Some(q), .. } => *(if i == 0 { at } else { q }) = p,
+            _ => {}
+        }
+    }
+
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        let mv = |q: &mut Pt| *q = (q.0 + dx, q.1 + dy);
+        match &mut self.kind {
+            Kind::Pencil(p) | Kind::Marker(p) => p.iter_mut().for_each(mv),
+            Kind::Line(a, b)
+            | Kind::Arrow(a, b)
+            | Kind::Rect(a, b)
+            | Kind::Pixelate(a, b)
+            | Kind::FilledRect(a, b)
+            | Kind::Ellipse(a, b)
+            | Kind::Ruler(a, b) => {
+                mv(a);
+                mv(b);
+            }
+            Kind::Text { at, .. } => mv(at),
+            Kind::Counter { at, tip, .. } => {
+                mv(at);
+                if let Some(q) = tip {
+                    mv(q);
+                }
+            }
+        }
+    }
+
+    /// Толщину меняют и у пикселизации (размер блока), но не у закрашенного прямоугольника.
+    pub fn has_width(&self) -> bool {
+        !matches!(self.kind, Kind::FilledRect(..))
+    }
+}
+
 fn polyline(pts: &[Pt]) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
     pb.move_to(pts[0].0, pts[0].1);

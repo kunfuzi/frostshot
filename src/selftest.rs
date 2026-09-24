@@ -389,6 +389,7 @@ pub fn run(dir: &Path) -> i32 {
 
     ocr_check(&mut c, dir);
     history_check(&mut c);
+    edit_check(&mut c, dir, draw::load_font().map(Arc::new));
 
     // Список процессов читается: в нём есть сам Frostshot.
     let procs = crate::platform::running_processes();
@@ -488,4 +489,123 @@ fn history_check(c: &mut Check) {
     c.ok("history prune to 2", history::list().len() == 2);
     history::clear();
     c.ok("history clear", history::list().is_empty());
+}
+
+/// Правка готовых фигур в режиме выделения (V): выбор, перенос, ручки, удаление,
+/// отмена, правка текста; новая область не сбрасывает разметку.
+fn edit_check(c: &mut Check, dir: &Path, font: Option<Arc<ab_glyph::FontVec>>) {
+    use crate::shapes::Kind;
+    let mut img = tiny_skia::Pixmap::new(1000, 800).unwrap();
+    img.fill(tiny_skia::Color::from_rgba8(60, 90, 140, 255));
+    let shot = crate::capture::MonitorShot { x: 0, y: 0, pixmap: img };
+    let mut s = Session::new(vec![shot], vec![1.0], 0.5, 0xE24B4A, 4.0, font);
+    let click = |s: &mut Session, x: f32, y: f32| {
+        s.on_left_press(0, x, y);
+        s.on_left_release(0, x, y);
+    };
+    let ctrl_z = |s: &mut Session, shift: bool| {
+        s.mods = Mods { ctrl: true, shift, ..Default::default() };
+        s.on_key(Some(KeyCode::KeyZ), None, None);
+        s.mods = Mods::default();
+    };
+    drag(&mut s, 0, (150.0, 150.0), (650.0, 450.0));
+    s.on_key(Some(KeyCode::Digit4), None, None);
+    drag(&mut s, 0, (200.0, 200.0), (400.0, 300.0));
+    s.on_key(Some(KeyCode::Digit5), None, None);
+    drag(&mut s, 0, (450.0, 180.0), (600.0, 260.0));
+    s.on_key(Some(KeyCode::Digit7), None, None);
+    drag(&mut s, 0, (200.0, 330.0), (300.0, 420.0));
+    s.on_key(Some(KeyCode::Digit6), None, None);
+    click(&mut s, 480.0, 380.0);
+    s.on_key(Some(KeyCode::KeyH), None, Some("Hi"));
+    s.on_key(None, Some(NamedKey::Escape), None);
+    c.ok("edit: 4 shapes drawn", s.shapes().len() == 4);
+    let text_at = match s.shapes()[3].kind {
+        Kind::Text { at, .. } => at,
+        _ => (0.0, 0.0),
+    };
+
+    // Выбор и перенос стрелки за середину.
+    s.on_key(Some(KeyCode::KeyV), None, None);
+    click(&mut s, 300.0, 250.0);
+    c.ok("edit: click picks arrow", s.picked() == Some(0));
+    drag(&mut s, 0, (300.0, 250.0), (350.0, 270.0));
+    let arrow = |s: &Session| match s.shapes()[0].kind {
+        Kind::Arrow(a, b) => Some((a, b)),
+        _ => None,
+    };
+    c.ok("edit: arrow moved", arrow(&s) == Some(((250.0, 220.0), (450.0, 320.0))));
+    ctrl_z(&mut s, false);
+    c.ok("edit: undo move", arrow(&s) == Some(((200.0, 200.0), (400.0, 300.0))));
+    ctrl_z(&mut s, true);
+    c.ok("edit: redo move", arrow(&s) == Some(((250.0, 220.0), (450.0, 320.0))));
+
+    // Ручка: конец стрелки.
+    click(&mut s, 350.0, 270.0);
+    drag(&mut s, 0, (450.0, 320.0), (500.0, 400.0));
+    c.ok("edit: handle moves arrow tip", arrow(&s).map(|x| x.1) == Some((500.0, 400.0)));
+    c.ok("edit: handle keeps arrow tail", arrow(&s).map(|x| x.0) == Some((250.0, 220.0)));
+
+    // Рамка: выбор по контуру, клик внутри мимо контура не выбирает.
+    click(&mut s, 525.0, 220.0);
+    c.ok("edit: click inside empty rect misses", s.picked().is_none());
+    click(&mut s, 450.0, 220.0);
+    c.ok("edit: click on rect edge picks it", s.picked() == Some(1));
+    // Угол рамки.
+    drag(&mut s, 0, (600.0, 260.0), (620.0, 300.0));
+    c.ok("edit: rect corner resized", matches!(s.shapes()[1].kind, Kind::Rect(a, b) if a == (450.0, 180.0) && b == (620.0, 300.0)));
+    // Колесо: толщина выбранной, серия отменяется разом.
+    let w0 = s.shapes()[1].width;
+    s.on_wheel(1.0);
+    s.on_wheel(1.0);
+    c.ok("edit: wheel widens picked", s.shapes()[1].width == w0 + 2.0);
+    c.ok("edit: wheel on picked keeps brush width", s.width == 4.0);
+    ctrl_z(&mut s, false);
+    c.ok("edit: wheel series undone at once", s.shapes()[1].width == w0);
+    // Delete и отмена.
+    click(&mut s, 450.0, 220.0);
+    s.on_key(None, Some(NamedKey::Delete), None);
+    c.ok("edit: delete removes", s.shapes().len() == 3);
+    ctrl_z(&mut s, false);
+    c.ok("edit: undo delete", s.shapes().len() == 4 && matches!(s.shapes()[1].kind, Kind::Rect(..)));
+
+    // Пикселизация: выбор по площади, стрелки двигают, Shift на 10.
+    click(&mut s, 250.0, 380.0);
+    c.ok("edit: click picks pixelate", s.picked() == Some(2));
+    s.on_key(None, Some(NamedKey::ArrowRight), None);
+    s.mods = Mods { shift: true, ..Default::default() };
+    s.on_key(None, Some(NamedKey::ArrowDown), None);
+    s.mods = Mods::default();
+    c.ok("edit: arrows nudge pixelate", matches!(s.shapes()[2].kind, Kind::Pixelate(a, _) if a == (201.0, 340.0)));
+    ctrl_z(&mut s, false);
+    c.ok("edit: nudge series undone at once", matches!(s.shapes()[2].kind, Kind::Pixelate(a, _) if a == (200.0, 330.0)));
+    let frame = s.render(0).clone();
+    click(&mut s, 250.0, 380.0);
+    let frame_picked = s.render(0).clone();
+    output::save_png(&frame_picked, &dir.join("frame_shape_picked.png")).ok();
+    c.ok("edit: picked shape outlined", frame.data() != frame_picked.data());
+    // Esc снимает выбор, а не закрывает.
+    c.ok("edit: esc deselects", s.on_key(None, Some(NamedKey::Escape), None) == Action::None && s.picked().is_none());
+
+    // Двойной клик по тексту: правка на месте, стиль и место в списке те же.
+    let (tx, ty) = (text_at.0 + 5.0, text_at.1 + 8.0);
+    click(&mut s, tx, ty);
+    click(&mut s, tx, ty);
+    s.on_key(Some(KeyCode::Digit1), None, Some("!"));
+    s.on_key(None, Some(NamedKey::Escape), None);
+    c.ok("edit: text re-edited in place", matches!(&s.shapes()[3].kind, Kind::Text { text, at } if text == "Hi!" && *at == text_at));
+    ctrl_z(&mut s, false);
+    c.ok("edit: undo text edit", matches!(&s.shapes()[3].kind, Kind::Text { text, .. } if text == "Hi"));
+
+    // Новая область на том же мониторе: разметка остаётся.
+    drag(&mut s, 0, (100.0, 100.0), (800.0, 600.0));
+    c.ok("edit: new area keeps shapes", s.shapes().len() == 4);
+    let img = s.result().unwrap();
+    c.ok("edit: new area size", (img.width(), img.height()) == (700, 500));
+
+    // Проект: после открытия Ctrl+Z снимает фигуры по одной.
+    let bytes = s.to_project().unwrap();
+    let mut p = Session::from_project(&bytes, 0, 0, 1.0, 0.5, None).unwrap();
+    ctrl_z(&mut p, false);
+    c.ok("edit: project undo removes last shape", p.shapes().len() == 3);
 }
