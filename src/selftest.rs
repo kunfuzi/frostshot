@@ -365,7 +365,7 @@ pub fn run(dir: &Path) -> i32 {
 /// Сквозная проверка: картинка с личными данными -> распознавание Windows -> поиск -> скрытие.
 fn ocr_check(c: &mut Check, dir: &Path) {
     let Some(font) = draw::load_font() else { return };
-    let (w, h) = (900u32, 260u32);
+    let (w, h) = (1100u32, 320u32);
     let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
     pm.fill(tiny_skia::Color::WHITE);
     let lines = [
@@ -373,6 +373,7 @@ fn ocr_check(c: &mut Check, dir: &Path) {
         "Телефон: +7 912 345-67-89",
         "Карта: 4276 3801 2345 6787",
         "Пароль: Qwerty2026 и токен ghp_A1b2C3d4E5f6G7h8I9j0KLMN",
+        "Твой номер 4257 1111 2255 6888 4555 теперь есть в юнит-тестах",
     ];
     for (i, t) in lines.iter().enumerate() {
         draw::draw_text(&mut pm, &font, t, 20.0, 20.0 + i as f32 * 56.0, 28.0, [0x11, 0x11, 0x11], 1.0, None);
@@ -386,7 +387,7 @@ fn ocr_check(c: &mut Check, dir: &Path) {
             println!("INFO {}", crate::ocr::summary(&found));
             let kinds: Vec<_> = found.iter().map(|(k, _)| *k).collect();
             use crate::ocr::Kind;
-            for k in [Kind::Email, Kind::Phone, Kind::Card, Kind::Secret] {
+            for k in [Kind::Email, Kind::Phone, Kind::Card, Kind::Secret, Kind::Number] {
                 c.ok(&format!("ocr finds {}", k.label()), kinds.contains(&k));
             }
             // Через сессию: скрытие меняет пиксели на месте почты.

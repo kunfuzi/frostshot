@@ -606,7 +606,52 @@ pub fn force_foreground(window: &winit::window::Window) {
 
 /// Распознать текст на картинке (RGBA premultiplied, непрозрачная). Windows: Windows.Media.Ocr,
 /// локально, языки из профиля пользователя. Блокирующий вызов: только из фонового потока.
+///
+/// Движок Windows выбрасывает строку целиком, если в ней есть «1111» (четыре одинаковые
+/// палочки он принимает за разметку). Поэтому второй проход идёт по копии с небольшим
+/// наклоном: из него берутся только строки, которых нет в первом проходе.
 pub fn ocr_recognize(img: &tiny_skia::Pixmap) -> Result<Vec<crate::ocr::Line>, String> {
+    const SHEAR: f32 = 0.2;
+    let mut lines = ocr_pass(img)?;
+    let (w, h) = (img.width(), img.height());
+    let shift = SHEAR * h as f32;
+    let Some(mut sheared) = tiny_skia::Pixmap::new(w + shift.ceil() as u32, h) else { return Ok(lines) };
+    let bg = img.pixel(0, 0).map(|p| p.demultiply()).unwrap_or(tiny_skia::ColorU8::from_rgba(255, 255, 255, 255));
+    sheared.fill(tiny_skia::Color::from_rgba8(bg.red(), bg.green(), bg.blue(), 255));
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bicubic, ..Default::default() };
+    // x' = x - SHEAR * y + shift
+    sheared.draw_pixmap(0, 0, img.as_ref(), &paint, tiny_skia::Transform::from_row(1.0, 0.0, -SHEAR, 1.0, shift, 0.0), None);
+    let Ok(extra) = ocr_pass(&sheared) else { return Ok(lines) };
+    let span = |l: &crate::ocr::Line| {
+        let y0 = l.words.iter().map(|w| w.rect.1).fold(f32::MAX, f32::min);
+        let y1 = l.words.iter().map(|w| w.rect.1 + w.rect.3).fold(f32::MIN, f32::max);
+        (y0, y1)
+    };
+    let known: Vec<(f32, f32)> = lines.iter().filter(|l| !l.words.is_empty()).map(span).collect();
+    for mut l in extra {
+        if l.words.is_empty() {
+            continue;
+        }
+        let (y0, y1) = span(&l);
+        let covered = known.iter().any(|&(a, b)| (y1.min(b) - y0.max(a)) > 0.5 * (y1 - y0).min(b - a));
+        if covered {
+            continue;
+        }
+        // Обратный наклон: x = x' + SHEAR * y - shift, берём крайние углы прямоугольника.
+        for wd in &mut l.words {
+            let (x, y, ww, hh) = wd.rect;
+            let x0 = x + SHEAR * y - shift;
+            let x1 = x + ww + SHEAR * (y + hh) - shift;
+            wd.rect = (x0, y, x1 - x0, hh);
+        }
+        lines.push(l);
+    }
+    lines.sort_by(|a, b| span(a).0.total_cmp(&span(b).0));
+    Ok(lines)
+}
+
+/// Один проход распознавания; мелкие картинки увеличиваются вдвое.
+fn ocr_pass(img: &tiny_skia::Pixmap) -> Result<Vec<crate::ocr::Line>, String> {
     #[cfg(windows)]
     {
         use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap};
@@ -616,9 +661,9 @@ pub fn ocr_recognize(img: &tiny_skia::Pixmap) -> Result<Vec<crate::ocr::Line>, S
         let e = |e: windows::core::Error| format!("OCR: {}", e.message());
         // SAFETY: инициализация WinRT для текущего (фонового) потока.
         let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-        let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| "Нет языка распознавания: добавьте пакет OCR в «Язык и регион» Windows".to_string())?;
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages()
+            .map_err(|_| "Нет языка распознавания: добавьте пакет OCR в «Язык и регион» Windows".to_string())?;
         let max = OcrEngine::MaxImageDimension().unwrap_or(4096) as f32;
-        // Мелкий текст распознаётся лучше, если картинку увеличить; большие уменьшаем до предела.
         let (w, h) = (img.width() as f32, img.height() as f32);
         let mut k = if w.max(h) * 2.0 <= max { 2.0 } else { 1.0 };
         if w.max(h) * k > max {
@@ -643,10 +688,7 @@ pub fn ocr_recognize(img: &tiny_skia::Pixmap) -> Result<Vec<crate::ocr::Line>, S
             let mut words = Vec::new();
             for word in line.Words().map_err(e)? {
                 let r = word.BoundingRect().map_err(e)?;
-                words.push(crate::ocr::Word {
-                    text: word.Text().map_err(e)?.to_string(),
-                    rect: (r.X / k, r.Y / k, r.Width / k, r.Height / k),
-                });
+                words.push(crate::ocr::Word { text: word.Text().map_err(e)?.to_string(), rect: (r.X / k, r.Y / k, r.Width / k, r.Height / k) });
             }
             lines.push(crate::ocr::Line { words });
         }
