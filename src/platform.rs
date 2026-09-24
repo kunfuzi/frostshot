@@ -527,74 +527,76 @@ pub fn open_keyboard_settings() {
     }
 }
 
-/// Сделать окно активным даже если сейчас активна оболочка (меню «Пуск», поиск,
-/// центр уведомлений). Они живут в слое выше «поверх всех» окон и закрываются,
-/// только когда активным становится другое окно. Windows запрещает фоновой программе
-/// забирать фокус, поэтому по очереди:
-/// 1) подключение к очереди ввода активной программы;
-/// 2) одиночный Alt: программа с последним вводом получает право сменить фокус;
-/// 3) только если активна оболочка (CoreWindow): Esc, от него эти меню закрываются.
+#[cfg(windows)]
+fn foreground_class() -> (windows_sys::Win32::Foundation::HWND, String) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow};
+    // SAFETY: чтение класса окна в локальный буфер.
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.is_null() {
+            return (h, String::new());
+        }
+        let mut buf = [0u16; 128];
+        let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32);
+        (h, String::from_utf16_lossy(&buf[..n.max(0) as usize]))
+    }
+}
+
+/// Меню «Пуск», поиск и центр уведомлений живут в слое выше «поверх всех» окон,
+/// и активировать своё окно, пока они открыты, Windows не даёт. Вызывать после
+/// снимка экрана: если активна такая панель оболочки, закрыть её Esc и дождаться,
+/// пока фокус вернётся к обычному окну. Обычным программам Esc не отправляется.
+pub fn dismiss_shell_flyout() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_ESCAPE, keybd_event};
+        let (_, class) = foreground_class();
+        if class != "Windows.UI.Core.CoreWindow" {
+            return;
+        }
+        // SAFETY: парное нажатие и отпускание клавиши.
+        unsafe {
+            keybd_event(VK_ESCAPE as u8, 0, 0, 0);
+            keybd_event(VK_ESCAPE as u8, 0, KEYEVENTF_KEYUP, 0);
+        }
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < std::time::Duration::from_millis(400) {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            if foreground_class().1 != class {
+                break;
+            }
+        }
+        log::info!("shell flyout closed in {:?}, foreground now {}", t0.elapsed(), foreground_class().1);
+    }
+}
+
+/// Сделать окно активным. Windows запрещает фоновой программе забирать фокус,
+/// поэтому на время подключаемся к очереди ввода активной программы.
 pub fn force_foreground(window: &winit::window::Window) {
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, SetActiveWindow, SetFocus, VK_ESCAPE, VK_MENU, keybd_event};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            BringWindowToTop, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
-        };
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let Ok(h) = window.window_handle() else { return window.focus_window() };
         let RawWindowHandle::Win32(w) = h.as_raw() else { return window.focus_window() };
         let hwnd = w.hwnd.get() as windows_sys::Win32::Foundation::HWND;
-        // SAFETY: hwnd живого окна; присоединение ввода снимаем в этой же функции;
-        // синтетические клавиши всегда парные (нажатие и отпускание).
+        // SAFETY: hwnd живого окна; присоединение ввода снимаем в этой же функции.
         unsafe {
-            let class_of = |h: windows_sys::Win32::Foundation::HWND| -> String {
-                if h.is_null() {
-                    return String::new();
-                }
-                let mut buf = [0u16; 128];
-                let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32);
-                String::from_utf16_lossy(&buf[..n.max(0) as usize])
-            };
-            let activate = || {
-                BringWindowToTop(hwnd);
-                SetForegroundWindow(hwnd);
-                SetActiveWindow(hwnd);
-                SetFocus(hwnd);
-                GetForegroundWindow() == hwnd
-            };
-            let tap = |vk: u16| {
-                keybd_event(vk as u8, 0, 0, 0);
-                keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0);
-            };
-
-            let fg = GetForegroundWindow();
-            let fg_class = class_of(fg);
+            let (fg, fg_class) = foreground_class();
             let fg_tid = if fg.is_null() { 0 } else { GetWindowThreadProcessId(fg, std::ptr::null_mut()) };
             let me = GetCurrentThreadId();
             let attached = fg_tid != 0 && fg_tid != me && AttachThreadInput(me, fg_tid, 1) != 0;
-            let mut ok = activate();
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+            SetFocus(hwnd);
             if attached {
                 AttachThreadInput(me, fg_tid, 0);
             }
-            let mut how = "attach";
-            if !ok {
-                tap(VK_MENU);
-                ok = activate();
-                how = "alt";
-            }
-            let shell = fg_class == "Windows.UI.Core.CoreWindow";
-            if !ok && shell && class_of(GetForegroundWindow()) == fg_class {
-                tap(VK_ESCAPE);
-                std::thread::sleep(std::time::Duration::from_millis(60));
-                ok = activate();
-                how = "esc";
-            }
-            log::info!(
-                "overlay foreground: {} via {how} (was {fg_class}, attached {attached})",
-                if ok { "ok" } else { "FAILED" }
-            );
+            let ok = GetForegroundWindow() == hwnd;
+            log::info!("overlay foreground: {} (was {fg_class}, attached {attached})", if ok { "ok" } else { "FAILED" });
         }
         return;
     }

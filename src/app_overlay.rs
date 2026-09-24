@@ -96,6 +96,8 @@ impl App {
             }
         };
         log::info!("captured {} monitors in {:?}", shots.len(), t0.elapsed());
+        // «Пуск» и другие панели оболочки уже в кадре; закрываем их, иначе они останутся поверх оверлея.
+        platform::dismiss_shell_flyout();
         let rects: Vec<_> = shots.iter().map(|s| (s.x, s.y, s.width(), s.height())).collect();
         let Some((wins, scales)) = self.create_windows(el, &rects) else { return };
         let session = Session::new(shots, scales, self.config.dim, self.config.color, self.config.width, self.font.clone());
@@ -108,6 +110,7 @@ impl App {
         if self.busy() {
             return;
         }
+        platform::dismiss_shell_flyout();
         let Some(mut session) = self.last.take() else { return };
         self.toast = None;
         session.wake();
@@ -123,6 +126,7 @@ impl App {
         if self.busy() {
             return;
         }
+        platform::dismiss_shell_flyout();
         let res = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| {
             let (h, _) = project::decode(&bytes)?;
             // Монитор под курсором, если снимок в него помещается, иначе самый большой подходящий.
