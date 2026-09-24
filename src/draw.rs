@@ -53,6 +53,10 @@ pub fn load_font() -> Option<FontVec> {
     None
 }
 
+pub fn ascent(font: &FontVec, size: f32) -> f32 {
+    font.as_scaled(PxScale::from(size)).ascent()
+}
+
 pub fn line_height(font: &FontVec, size: f32) -> f32 {
     let s = font.as_scaled(PxScale::from(size));
     s.height() + s.line_gap()

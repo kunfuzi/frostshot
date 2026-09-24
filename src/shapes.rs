@@ -202,9 +202,16 @@ fn counter(pm: &mut Pixmap, at: Pt, n: u32, tip: Option<Pt>, c: Rgb, w: f32, fon
         let luma = 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
         let fg = if luma > 160.0 { [0x11, 0x11, 0x11] } else { [0xff, 0xff, 0xff] };
         let text = n.to_string();
-        let size = r * 1.15;
-        let (tw, th) = draw::text_size(f, &text, size);
-        draw::draw_text(pm, f, &text, at.0 - tw / 2.0, at.1 - th / 2.0, size, fg, 1.0, clip);
+        // Крупная цифра; многозначный номер ужимается, чтобы остаться внутри кружка.
+        let mut size = r * 1.5;
+        let tw = draw::text_size(f, &text, size).0;
+        if tw > r * 1.5 {
+            size *= r * 1.5 / tw;
+        }
+        let tw = draw::text_size(f, &text, size).0;
+        // Центр по высоте цифр (≈0.7 кегля), а не по всей строке.
+        let y = at.1 + size * 0.35 - draw::ascent(f, size);
+        draw::draw_text(pm, f, &text, at.0 - tw / 2.0, y, size, fg, 1.0, clip);
     }
 }
 
