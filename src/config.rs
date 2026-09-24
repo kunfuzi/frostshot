@@ -53,7 +53,7 @@ impl Default for Config {
             file_template: DEFAULT_TEMPLATE.into(),
             dim: 0.5,
             notify: true,
-            auto_hide: false,
+            auto_hide: true,
         }
     }
 }
