@@ -15,12 +15,15 @@ pub enum Tool {
     Line,
     Arrow,
     Rect,
+    FilledRect,
+    Ellipse,
     Text,
+    Counter,
     Pixelate,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 9] = [
+    pub const ALL: [Tool; 12] = [
         Tool::SelectRect,
         Tool::SelectLasso,
         Tool::Pencil,
@@ -28,7 +31,10 @@ impl Tool {
         Tool::Line,
         Tool::Arrow,
         Tool::Rect,
+        Tool::FilledRect,
+        Tool::Ellipse,
         Tool::Text,
+        Tool::Counter,
         Tool::Pixelate,
     ];
 
@@ -44,7 +50,10 @@ impl Tool {
             Tool::Marker => "Маркер (2)",
             Tool::Line => "Линия (3)",
             Tool::Arrow => "Стрелка (4)",
-            Tool::Rect => "Прямоугольник (5)",
+            Tool::Rect => "Прямоугольник (5, Shift: квадрат)",
+            Tool::FilledRect => "Закрашенный прямоугольник (8)",
+            Tool::Ellipse => "Эллипс (9, Shift: круг)",
+            Tool::Counter => "Счётчик 1, 2, 3 (0)",
             Tool::Text => "Текст (6)",
             Tool::Pixelate => "Пикселизация (7)",
         }
@@ -63,6 +72,9 @@ pub enum Kind {
     Rect(Pt, Pt),
     Text { at: Pt, text: String },
     Pixelate(Pt, Pt),
+    FilledRect(Pt, Pt),
+    Ellipse(Pt, Pt),
+    Counter { at: Pt, n: u32 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,6 +88,11 @@ pub fn font_size(width: f32) -> f32 {
     14.0 + width * 3.0
 }
 
+/// Радиус кружка счётчика.
+pub fn counter_radius(width: f32) -> f32 {
+    11.0 + width * 1.5
+}
+
 pub fn marker_width(width: f32) -> f32 {
     (width * 3.0).max(12.0)
 }
@@ -86,7 +103,10 @@ impl Shape {
         let far = |a: Pt, b: Pt| (a.0 - b.0).abs() + (a.1 - b.1).abs() >= 3.0;
         match &self.kind {
             Kind::Pencil(p) | Kind::Marker(p) => !p.is_empty(),
-            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Pixelate(a, b) => far(*a, *b),
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Pixelate(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) => {
+                far(*a, *b)
+            }
+            Kind::Counter { .. } => true,
             Kind::Text { text, .. } => !text.trim().is_empty(),
         }
     }
@@ -131,7 +151,35 @@ pub fn render(pm: &mut Pixmap, s: &Shape, src: &Pixmap, font: Option<&FontVec>, 
             }
         }
         Kind::Pixelate(a, b) => pixelate(pm, src, *a, *b, s.width, clip),
+        Kind::FilledRect(a, b) => {
+            if let Some(r) = draw::rect_ltrb(a.0, a.1, b.0, b.1) {
+                let p = PathBuilder::from_rect(r);
+                pm.fill_path(&p, &draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), clip);
+            }
+        }
+        Kind::Ellipse(a, b) => {
+            if let Some(p) = draw::rect_ltrb(a.0, a.1, b.0, b.1).and_then(PathBuilder::from_oval) {
+                draw::stroke_path(pm, &p, c, 1.0, s.width, clip);
+            }
+        }
+        Kind::Counter { at, n } => counter(pm, *at, *n, c, s.width, font, clip),
         _ => {}
+    }
+}
+
+/// Кружок с номером: цифра белая или чёрная в зависимости от яркости цвета.
+fn counter(pm: &mut Pixmap, at: Pt, n: u32, c: Rgb, w: f32, font: Option<&FontVec>, clip: Option<&Mask>) {
+    let r = counter_radius(w);
+    if let Some(p) = PathBuilder::from_circle(at.0, at.1, r) {
+        pm.fill_path(&p, &draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), clip);
+    }
+    if let Some(f) = font {
+        let luma = 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
+        let fg = if luma > 160.0 { [0x11, 0x11, 0x11] } else { [0xff, 0xff, 0xff] };
+        let text = n.to_string();
+        let size = r * 1.15;
+        let (tw, th) = draw::text_size(f, &text, size);
+        draw::draw_text(pm, f, &text, at.0 - tw / 2.0, at.1 - th / 2.0, size, fg, 1.0, clip);
     }
 }
 

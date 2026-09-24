@@ -32,6 +32,8 @@ pub enum Btn {
     Tool(Tool),
     Color,
     Undo,
+    Redo,
+    Pin,
     Upload,
     Copy,
     Save,
@@ -47,6 +49,8 @@ impl Btn {
             Btn::Tool(t) => t.label(),
             Btn::Color => "Цвет",
             Btn::Undo => "Отменить (Ctrl+Z)",
+            Btn::Redo => "Повторить (Ctrl+Shift+Z)",
+            Btn::Pin => "Закрепить поверх окон (P)",
             Btn::Upload => "Облако (скоро)",
             Btn::Copy => "Копировать (Ctrl+C, Enter)",
             Btn::Save => "Сохранить…",
@@ -88,7 +92,11 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     let mut vitems: Vec<Btn> = Tool::ALL.iter().map(|t| Btn::Tool(*t)).collect();
     vitems.push(Btn::Color);
     vitems.push(Btn::Undo);
-    let (vw, vh) = (b + 2.0 * pad, vitems.len() as f32 * b + 2.0 * pad);
+    vitems.push(Btn::Redo);
+    // Не помещается по высоте: переносим во второй (третий) столбец.
+    let rows = (((mh - 2.0 * pad) / b).floor() as usize).clamp(1, vitems.len());
+    let cols = vitems.len().div_ceil(rows);
+    let (vw, vh) = (cols as f32 * b + 2.0 * pad, rows as f32 * b + 2.0 * pad);
     let mut vx = bbox.right() + gap;
     if vx + vw > mw {
         vx = bbox.left() - gap - vw;
@@ -100,11 +108,12 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     let vpanel = Rect::from_xywh(vx, vy, vw, vh).unwrap();
     out.panels.push(vpanel);
     for (i, it) in vitems.iter().enumerate() {
-        out.buttons.push((*it, Rect::from_xywh(vx + pad, vy + pad + i as f32 * b, b, b).unwrap()));
+        let (c, r) = ((i / rows) as f32, (i % rows) as f32);
+        out.buttons.push((*it, Rect::from_xywh(vx + pad + c * b, vy + pad + r * b, b, b).unwrap()));
     }
 
     // Горизонтальная панель действий.
-    let hitems = [Btn::Upload, Btn::Copy, Btn::Save, Btn::Close];
+    let hitems = [Btn::Upload, Btn::Pin, Btn::Copy, Btn::Save, Btn::Close];
     let (hw, hh) = (hitems.len() as f32 * b + 2.0 * pad, b + 2.0 * pad);
     let mut hy = bbox.bottom() + gap;
     if hy + hh > mh {
@@ -157,6 +166,7 @@ pub struct UiState<'a> {
     pub color: u32,
     pub hover: Option<Btn>,
     pub can_undo: bool,
+    pub can_redo: bool,
     pub font: Option<&'a FontVec>,
     pub scale: f32,
 }
@@ -177,6 +187,7 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
         let fg = match btn {
             Btn::Upload => MUTED,
             Btn::Undo if !st.can_undo => MUTED,
+            Btn::Redo if !st.can_redo => MUTED,
             _ if active => WHITE,
             _ => FG,
         };
@@ -283,6 +294,27 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
             tri(pm, (23.5, 8.5), (15.0, 12.0), (20.0, 17.0));
         }
         Btn::Tool(Tool::Rect) => rect_outline(pm, 8.0, 10.0, 16.0, 12.0, false),
+        Btn::Tool(Tool::FilledRect) => {
+            let a = p(8.0, 10.0);
+            if let Some(rr) = Rect::from_xywh(a.0, a.1, 16.0 * k, 12.0 * k) {
+                draw::fill_rect(pm, rr, fg, 1.0, None);
+            }
+        }
+        Btn::Tool(Tool::Ellipse) => {
+            let a = p(7.0, 10.0);
+            if let Some(path) = Rect::from_xywh(a.0, a.1, 18.0 * k, 12.0 * k).and_then(PathBuilder::from_oval) {
+                draw::stroke_path(pm, &path, fg, 1.0, w * 0.8, None);
+            }
+        }
+        Btn::Tool(Tool::Counter) => {
+            let c = p(16.0, 16.0);
+            draw::circle(pm, c.0, c.1, 8.5 * k, fg, 1.0, false, w * 0.8);
+            if let Some(font) = st.font {
+                let size = 12.0 * k;
+                let (tw, th) = draw::text_size(font, "1", size);
+                draw::draw_text(pm, font, "1", c.0 - tw / 2.0, c.1 - th / 2.0, size, fg, 1.0, None);
+            }
+        }
         Btn::Tool(Tool::Text) => {
             ln(pm, (10.0, 10.0), (22.0, 10.0), w * 1.2, 1.0);
             ln(pm, (16.0, 10.0), (16.0, 23.0), w * 1.2, 1.0);
@@ -321,6 +353,32 @@ fn icon(pm: &mut Pixmap, btn: Btn, r: Rect, fg: Rgb, st: &UiState) {
                 draw::stroke_path(pm, &path, fg, 1.0, w, None);
             }
             tri(pm, (8.0, 14.0), (14.0, 9.0), (14.0, 19.0));
+        }
+        Btn::Redo => {
+            // Зеркало иконки «Отменить».
+            let q = |x: f32, y: f32| p(32.0 - x, y);
+            let mut pb = PathBuilder::new();
+            let (a, b1, c1, d, e, f) = (q(11.0, 14.0), q(19.0, 14.0), q(23.0, 18.0), q(23.0, 22.0), q(19.0, 22.0), q(13.0, 22.0));
+            let (bx, _) = q(23.0, 14.0);
+            pb.move_to(a.0, a.1);
+            pb.line_to(b1.0, b1.1);
+            pb.quad_to(bx, b1.1, c1.0, c1.1);
+            pb.quad_to(d.0, d.1, e.0, e.1);
+            pb.line_to(f.0, f.1);
+            if let Some(path) = pb.finish() {
+                draw::stroke_path(pm, &path, fg, 1.0, w, None);
+            }
+            tri(pm, (24.0, 14.0), (18.0, 9.0), (18.0, 19.0));
+        }
+        Btn::Pin => {
+            // Канцелярская кнопка: шляпка, корпус, игла.
+            ln(pm, (12.0, 9.0), (20.0, 9.0), w * 1.2, 1.0);
+            let a = p(13.5, 9.0);
+            if let Some(rr) = Rect::from_xywh(a.0, a.1, 5.0 * k, 8.0 * k) {
+                draw::fill_rect(pm, rr, fg, 1.0, None);
+            }
+            ln(pm, (10.0, 18.0), (22.0, 18.0), w * 1.2, 1.0);
+            ln(pm, (16.0, 18.0), (16.0, 25.0), w * 0.8, 1.0);
         }
         Btn::Upload => {
             ln(pm, (16.0, 22.0), (16.0, 12.0), w, 1.0);

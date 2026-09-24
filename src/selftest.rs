@@ -147,6 +147,51 @@ pub fn run(dir: &Path) -> i32 {
     s.on_key(Some(KeyCode::KeyZ), None, None);
     s.mods = Mods::default();
 
+    // Новые инструменты: закрашенный прямоугольник, эллипс, счётчик; повтор.
+    let base_img = s.result().unwrap();
+    s.on_key(Some(KeyCode::Digit8), None, None);
+    drag(&mut s, 0, (120.0, 120.0), (160.0, 160.0));
+    let img = s.result().unwrap();
+    let q = px(&img, 40, 40);
+    c.ok("filled rect is solid red", q[0] > 200 && q[1] < 90 && q[2] < 90);
+    s.on_key(Some(KeyCode::Digit9), None, None);
+    drag(&mut s, 0, (300.0, 200.0), (420.0, 260.0));
+    s.on_key(Some(KeyCode::Digit0), None, None);
+    for (x, y) in [(200.0, 300.0), (240.0, 300.0), (280.0, 300.0)] {
+        s.on_left_press(0, x, y);
+        s.on_left_release(0, x, y);
+    }
+    let frame = s.render(0).clone();
+    output::save_png(&frame, &dir.join("frame_new_tools.png")).ok();
+    let with_all = s.result().unwrap();
+    s.mods = Mods { ctrl: true, ..Default::default() };
+    s.on_key(Some(KeyCode::KeyZ), None, None); // убрать счётчик 3
+    s.mods = Mods::default();
+    s.on_left_press(0, 320.0, 300.0);
+    s.on_left_release(0, 320.0, 300.0); // снова 3, повтор очищен
+    s.mods = Mods { ctrl: true, shift: true, ..Default::default() };
+    s.on_key(Some(KeyCode::KeyZ), None, None); // повторять нечего
+    s.mods = Mods { ctrl: true, ..Default::default() };
+    for _ in 0..5 {
+        s.on_key(Some(KeyCode::KeyZ), None, None);
+    }
+    let undone = s.result().unwrap();
+    c.ok("undo all new shapes", undone.data() == base_img.data());
+    for _ in 0..5 {
+        s.on_key(Some(KeyCode::KeyY), None, None);
+    }
+    s.mods = Mods::default();
+    let redone = s.result().unwrap();
+    c.ok("redo restores shapes", redone.data() != undone.data());
+    let _ = with_all;
+    c.ok("P pins selection", s.on_key(Some(KeyCode::KeyP), None, None) == Action::Pin);
+    c.ok("selection origin known", s.selection_origin().is_some());
+    s.mods = Mods { ctrl: true, ..Default::default() };
+    for _ in 0..5 {
+        s.on_key(Some(KeyCode::KeyZ), None, None);
+    }
+    s.mods = Mods::default();
+
     // 4. Горячие клавиши действий.
     s.mods = Mods { ctrl: true, ..Default::default() };
     c.ok("ctrl+c -> copy", s.on_key(Some(KeyCode::KeyC), None, None) == Action::Copy);

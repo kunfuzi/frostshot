@@ -19,6 +19,7 @@ pub enum Action {
     Save,
     QuickSave,
     SaveProject,
+    Pin,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -53,6 +54,8 @@ pub struct Session {
     active: Option<usize>,
     sel: Option<Selection>,
     shapes: Vec<Shape>,
+    /// Отменённые фигуры для повтора (Ctrl+Shift+Z).
+    redo: Vec<Shape>,
     tool: Tool,
     pub color: u32,
     pub width: f32,
@@ -126,6 +129,7 @@ impl Session {
             active: None,
             sel: None,
             shapes: Vec::new(),
+            redo: Vec::new(),
             tool: Tool::SelectRect,
             color,
             width,
@@ -269,10 +273,44 @@ impl Session {
         if let Some(te) = self.text.take() {
             let shape = Shape { kind: Kind::Text { at: te.at, text: te.text }, color: draw::rgb(self.color), width: self.width };
             if shape.is_meaningful() {
-                self.shapes.push(shape);
+                self.push_shape(shape);
             }
             self.mark_sel();
         }
+    }
+
+    /// Новая фигура от пользователя: ветка повтора теряет смысл.
+    fn push_shape(&mut self, s: Shape) {
+        self.shapes.push(s);
+        self.redo.clear();
+    }
+
+    fn next_counter(&self) -> u32 {
+        self.shapes
+            .iter()
+            .filter_map(|s| match s.kind {
+                Kind::Counter { n, .. } => Some(n),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn redo_last(&mut self) {
+        self.commit_text();
+        if let Some(s) = self.redo.pop() {
+            self.shapes.push(s);
+        }
+        self.mark_sel();
+    }
+
+    /// Левый верхний угол выделения в глобальных координатах и масштаб монитора.
+    pub fn selection_origin(&self) -> Option<(i32, i32, f32)> {
+        let m = self.active?;
+        let b = self.sel.as_ref()?.bbox()?;
+        let s = &self.shots[m];
+        Some((s.x + b.x as i32, s.y + b.y as i32, self.scales[m]))
     }
 
     fn set_tool(&mut self, t: Tool) {
@@ -284,7 +322,9 @@ impl Session {
 
     fn undo(&mut self) {
         if self.text.take().is_none() {
-            self.shapes.pop();
+            if let Some(s) = self.shapes.pop() {
+                self.redo.push(s);
+            }
         }
         self.mark_sel();
     }
@@ -301,6 +341,7 @@ impl Session {
         }
         self.active = Some(mon);
         self.shapes.clear();
+        self.redo.clear();
         self.text = None;
         self.mark_sel();
     }
@@ -317,6 +358,8 @@ impl Session {
                 self.palette_open = false;
             }
             Btn::Undo => self.undo(),
+            Btn::Redo => self.redo_last(),
+            Btn::Pin => return Action::Pin,
             Btn::Upload => {}
             Btn::Copy => return Action::Copy,
             Btn::Save => {
@@ -424,7 +467,8 @@ impl Session {
                             }
                         }
                         Kind::Line(a, b) | Kind::Arrow(a, b) => *b = if shift { snap45(*a, p) } else { p },
-                        Kind::Rect(a, b) => *b = if shift { square(*a, p) } else { p },
+                        Kind::Rect(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) => *b = if shift { square(*a, p) } else { p },
+                        Kind::Counter { .. } => {}
                         Kind::Pixelate(_, b) => *b = p,
                         Kind::Text { .. } => {}
                     }
@@ -466,6 +510,14 @@ impl Session {
                 Tool::Line => Kind::Line(p, p),
                 Tool::Arrow => Kind::Arrow(p, p),
                 Tool::Rect => Kind::Rect(p, p),
+                Tool::FilledRect => Kind::FilledRect(p, p),
+                Tool::Ellipse => Kind::Ellipse(p, p),
+                Tool::Counter => {
+                    let n = self.next_counter();
+                    self.push_shape(Shape { kind: Kind::Counter { at: p, n }, color: c, width: w });
+                    self.mark_sel();
+                    return Action::None;
+                }
                 Tool::Pixelate => Kind::Pixelate(p, p),
                 Tool::Text => {
                     let fs = shapes::font_size(w);
@@ -546,7 +598,7 @@ impl Session {
             }
             Drag::Draw(shape) => {
                 if shape.is_meaningful() {
-                    self.shapes.push(shape);
+                    self.push_shape(shape);
                 }
             }
             Drag::Move { .. } | Drag::Resize { .. } | Drag::None => {}
@@ -565,6 +617,7 @@ impl Session {
             let a = self.active.take().unwrap();
             self.sel = None;
             self.shapes.clear();
+            self.redo.clear();
             self.text = None;
             self.base_dirty[a] = true;
             self.mark(a);
@@ -652,12 +705,23 @@ impl Session {
                 KeyCode::KeyC if sel => Action::Copy,
                 KeyCode::KeyS if sel && self.mods.shift => Action::QuickSave,
                 KeyCode::KeyS if sel => Action::Save,
+                KeyCode::KeyZ if self.mods.shift => {
+                    self.redo_last();
+                    Action::None
+                }
                 KeyCode::KeyZ => {
                     self.undo();
                     Action::None
                 }
+                KeyCode::KeyY => {
+                    self.redo_last();
+                    Action::None
+                }
                 _ => Action::None,
             };
+        }
+        if code == KeyCode::KeyP && sel {
+            return Action::Pin;
         }
         let tool = match code {
             KeyCode::KeyV => Some(Tool::SelectRect),
@@ -669,6 +733,9 @@ impl Session {
             KeyCode::Digit5 => Some(Tool::Rect),
             KeyCode::Digit6 => Some(Tool::Text),
             KeyCode::Digit7 => Some(Tool::Pixelate),
+            KeyCode::Digit8 => Some(Tool::FilledRect),
+            KeyCode::Digit9 => Some(Tool::Ellipse),
+            KeyCode::Digit0 => Some(Tool::Counter),
             _ => None,
         };
         if let Some(t) = tool {
@@ -812,6 +879,7 @@ impl Session {
                     if !self.tool.is_selection() && self.tool != Tool::Text && matches!(self.drag, Drag::None) {
                         let r = match self.tool {
                             Tool::Marker => shapes::marker_width(self.width) / 2.0,
+                            Tool::Counter => shapes::counter_radius(self.width),
                             _ => self.width / 2.0,
                         };
                         draw::circle(frame, x, y, r.max(2.0), draw::rgb(self.color), 1.0, false, 1.0);
@@ -822,6 +890,7 @@ impl Session {
                     color: self.color,
                     hover: self.hover,
                     can_undo: !self.shapes.is_empty() || self.text.is_some(),
+                    can_redo: !self.redo.is_empty(),
                     font,
                     scale: s,
                 };

@@ -125,7 +125,10 @@ fn sanitize(h: &mut Header) -> Result<(), String> {
                 points += p.len();
                 p.iter().all(ok_pt)
             }
-            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Pixelate(a, b) => ok_pt(a) && ok_pt(b),
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Pixelate(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) => {
+                ok_pt(a) && ok_pt(b)
+            }
+            Kind::Counter { at, n } => ok_pt(at) && *n <= 10_000,
             Kind::Text { at, text } => ok_pt(at) && text.chars().count() <= MAX_TEXT,
         };
         if !pts_ok {

@@ -6,6 +6,7 @@ mod capture;
 mod config;
 mod draw;
 mod output;
+mod pin;
 mod platform;
 mod project;
 mod selection;
@@ -82,6 +83,8 @@ struct App {
     /// Когда last перестал использоваться: через LAST_TTL память освобождается.
     last_at: std::time::Instant,
     toast: Option<toast::Toast>,
+    /// Снимки, закреплённые поверх окон.
+    pins: Vec<pin::Pin>,
     toast_pos: (f32, f32),
     pending_save: Option<Pending>,
     clipboard: Option<arboard::Clipboard>,
@@ -159,6 +162,23 @@ impl App {
             self.handle_settings_event(event);
         } else if self.toast.as_ref().is_some_and(|t| t.window.id() == id) {
             self.handle_toast_event(el, event);
+        } else if let Some(i) = self.pins.iter().position(|p| p.window.id() == id) {
+            match self.pins[i].on_event(event) {
+                pin::PinAction::Close => {
+                    self.pins.remove(i);
+                }
+                pin::PinAction::Copy => {
+                    if self.clipboard.is_none() {
+                        self.clipboard = arboard::Clipboard::new().ok();
+                    }
+                    if let Some(cb) = self.clipboard.as_mut() {
+                        if let Err(e) = output::to_clipboard(cb, &self.pins[i].img) {
+                            log::error!("clipboard: {e}");
+                        }
+                    }
+                }
+                pin::PinAction::None => {}
+            }
         } else {
             self.handle_overlay_event(el, id, event);
         }
@@ -374,6 +394,7 @@ fn main() {
         last: None,
         last_at: std::time::Instant::now(),
         toast: None,
+        pins: Vec::new(),
         toast_pos: (0.0, 0.0),
         pending_save: None,
         clipboard: None,

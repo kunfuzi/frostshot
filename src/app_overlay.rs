@@ -209,7 +209,7 @@ impl App {
     }
 
     /// Результат получен: оверлей закрываем, сессию храним, показываем уведомление.
-    fn finish_overlay(&mut self, el: &ActiveEventLoop, title: String, thumb: &Pixmap) {
+    fn finish_overlay(&mut self, el: &ActiveEventLoop, title: Option<String>, thumb: &Pixmap) {
         self.pending_save = None;
         let Some(ov) = self.overlay.take() else { return };
         let mut session = ov.session;
@@ -219,6 +219,7 @@ impl App {
         self.last = Some(session);
         self.last_at = std::time::Instant::now();
         self.update_tray_last();
+        let Some(title) = title else { return };
         if !self.config.notify {
             return;
         }
@@ -295,7 +296,20 @@ impl App {
                         Err(e) => log::error!("save: {e}"),
                     }
                 }
-                self.finish_overlay(el, title, &img);
+                self.finish_overlay(el, Some(title), &img);
+            }
+            Action::Pin => {
+                let Some(ov) = self.overlay.as_mut() else { return };
+                let (Some(img), Some((x, y, scale))) = (ov.session.result(), ov.session.selection_origin()) else { return };
+                let thumb = img.clone();
+                match pin::Pin::open(el, img, x, y, scale) {
+                    Ok(p) => {
+                        log::info!("pinned {}x{} at {x},{y}", thumb.width(), thumb.height());
+                        self.finish_overlay(el, None, &thumb);
+                        self.pins.push(p);
+                    }
+                    Err(e) => log::error!("pin: {e}"),
+                }
             }
             Action::QuickSave => {
                 let Some(img) = self.overlay.as_mut().and_then(|o| o.session.result()) else { return };
@@ -304,7 +318,7 @@ impl App {
                     Ok(p) => {
                         log::info!("saved {}", p.display());
                         let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                        self.finish_overlay(el, format!("Сохранено: {name}"), &img);
+                        self.finish_overlay(el, Some(format!("Сохранено: {name}")), &img);
                     }
                     Err(e) => {
                         log::error!("save: {e}");
@@ -379,7 +393,7 @@ impl App {
                 }
                 let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 let thumb = thumb.clone();
-                self.finish_overlay(el, format!("{what}: {name}"), &thumb);
+                self.finish_overlay(el, Some(format!("{what}: {name}")), &thumb);
             }
             Err(e) => {
                 log::error!("save: {e}");
