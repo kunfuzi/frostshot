@@ -161,6 +161,11 @@ pub fn run(dir: &Path) -> i32 {
         s.on_left_press(0, x, y);
         s.on_left_release(0, x, y);
     }
+    // Счётчик с выноской: нажатие на цель, отпускание в стороне; клин закрашивает середину.
+    drag(&mut s, 0, (150.0, 380.0), (260.0, 380.0));
+    let img = s.result().unwrap();
+    let q = px(&img, 105, 280);
+    c.ok("counter callout wedge drawn", q[0] > 200 && q[1] < 90 && q[2] < 90);
     let frame = s.render(0).clone();
     output::save_png(&frame, &dir.join("frame_new_tools.png")).ok();
     let with_all = s.result().unwrap();
@@ -172,12 +177,12 @@ pub fn run(dir: &Path) -> i32 {
     s.mods = Mods { ctrl: true, shift: true, ..Default::default() };
     s.on_key(Some(KeyCode::KeyZ), None, None); // повторять нечего
     s.mods = Mods { ctrl: true, ..Default::default() };
-    for _ in 0..5 {
+    for _ in 0..6 {
         s.on_key(Some(KeyCode::KeyZ), None, None);
     }
     let undone = s.result().unwrap();
     c.ok("undo all new shapes", undone.data() == base_img.data());
-    for _ in 0..5 {
+    for _ in 0..6 {
         s.on_key(Some(KeyCode::KeyY), None, None);
     }
     s.mods = Mods::default();
@@ -187,7 +192,7 @@ pub fn run(dir: &Path) -> i32 {
     c.ok("P pins selection", s.on_key(Some(KeyCode::KeyP), None, None) == Action::Pin);
     c.ok("selection origin known", s.selection_origin().is_some());
     s.mods = Mods { ctrl: true, ..Default::default() };
-    for _ in 0..5 {
+    for _ in 0..6 {
         s.on_key(Some(KeyCode::KeyZ), None, None);
     }
     s.mods = Mods::default();

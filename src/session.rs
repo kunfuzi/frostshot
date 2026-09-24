@@ -468,6 +468,7 @@ impl Session {
                         }
                         Kind::Line(a, b) | Kind::Arrow(a, b) => *b = if shift { snap45(*a, p) } else { p },
                         Kind::Rect(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) => *b = if shift { square(*a, p) } else { p },
+                        Kind::Counter { at, tip: Some(t), .. } => *at = if shift { snap45(*t, p) } else { p },
                         Kind::Counter { .. } => {}
                         Kind::Pixelate(_, b) => *b = p,
                         Kind::Text { .. } => {}
@@ -512,12 +513,8 @@ impl Session {
                 Tool::Rect => Kind::Rect(p, p),
                 Tool::FilledRect => Kind::FilledRect(p, p),
                 Tool::Ellipse => Kind::Ellipse(p, p),
-                Tool::Counter => {
-                    let n = self.next_counter();
-                    self.push_shape(Shape { kind: Kind::Counter { at: p, n }, color: c, width: w });
-                    self.mark_sel();
-                    return Action::None;
-                }
+                // Нажатие отмечает цель; кружок встанет там, где отпустят (выноска-клин).
+                Tool::Counter => Kind::Counter { at: p, n: self.next_counter(), tip: Some(p) },
                 Tool::Pixelate => Kind::Pixelate(p, p),
                 Tool::Text => {
                     let fs = shapes::font_size(w);
@@ -596,7 +593,15 @@ impl Session {
                     return Action::None;
                 }
             }
-            Drag::Draw(shape) => {
+            Drag::Draw(mut shape) => {
+                // Счётчик без протягивания: обычный кружок в точке клика.
+                if let Kind::Counter { at, tip: tip @ Some(_), .. } = &mut shape.kind {
+                    let t = tip.unwrap();
+                    if dist(*at, t) < shapes::counter_radius(shape.width) {
+                        *at = t;
+                        *tip = None;
+                    }
+                }
                 if shape.is_meaningful() {
                     self.push_shape(shape);
                 }

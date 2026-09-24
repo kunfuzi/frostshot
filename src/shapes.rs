@@ -74,7 +74,13 @@ pub enum Kind {
     Pixelate(Pt, Pt),
     FilledRect(Pt, Pt),
     Ellipse(Pt, Pt),
-    Counter { at: Pt, n: u32 },
+    /// tip: точка, на которую указывает выноска-клин (None: просто кружок).
+    Counter {
+        at: Pt,
+        n: u32,
+        #[serde(default)]
+        tip: Option<Pt>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -162,14 +168,33 @@ pub fn render(pm: &mut Pixmap, s: &Shape, src: &Pixmap, font: Option<&FontVec>, 
                 draw::stroke_path(pm, &p, c, 1.0, s.width, clip);
             }
         }
-        Kind::Counter { at, n } => counter(pm, *at, *n, c, s.width, font, clip),
+        Kind::Counter { at, n, tip } => counter(pm, *at, *n, *tip, c, s.width, font, clip),
         _ => {}
     }
 }
 
-/// Кружок с номером: цифра белая или чёрная в зависимости от яркости цвета.
-fn counter(pm: &mut Pixmap, at: Pt, n: u32, c: Rgb, w: f32, font: Option<&FontVec>, clip: Option<&Mask>) {
+/// Кружок с номером и необязательной выноской-клином к точке tip.
+/// Цифра белая или чёрная в зависимости от яркости цвета.
+#[allow(clippy::too_many_arguments)]
+fn counter(pm: &mut Pixmap, at: Pt, n: u32, tip: Option<Pt>, c: Rgb, w: f32, font: Option<&FontVec>, clip: Option<&Mask>) {
     let r = counter_radius(w);
+    if let Some(t) = tip {
+        let (dx, dy) = (t.0 - at.0, t.1 - at.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len > r {
+            // Основание клина внутри кружка, остриё в цели.
+            let (ux, uy) = (dx / len, dy / len);
+            let (px, py) = (-uy * r * 0.6, ux * r * 0.6);
+            let mut pb = PathBuilder::new();
+            pb.move_to(t.0, t.1);
+            pb.line_to(at.0 + px, at.1 + py);
+            pb.line_to(at.0 - px, at.1 - py);
+            pb.close();
+            if let Some(p) = pb.finish() {
+                pm.fill_path(&p, &draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), clip);
+            }
+        }
+    }
     if let Some(p) = PathBuilder::from_circle(at.0, at.1, r) {
         pm.fill_path(&p, &draw::paint(c, 1.0), FillRule::Winding, Transform::identity(), clip);
     }
