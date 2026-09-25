@@ -43,6 +43,24 @@ fn craft_evil(bytes: &[u8], shape_json: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Картинка вместо снимка экрана: тёмный фон, светлые «окна» и полосы «текста».
+fn synthetic_screen(w: u32, h: u32, seed: u8) -> tiny_skia::Pixmap {
+    let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
+    pm.fill(tiny_skia::Color::from_rgba8(24 + seed * 6, 28, 36, 255));
+    for i in 0..12u32 {
+        let (x, y) = ((i * 157 + seed as u32 * 40) % (w - 300), (i * 89) % (h - 200));
+        if let Some(r) = tiny_skia::Rect::from_xywh(x as f32, y as f32, 280.0, 180.0) {
+            draw::fill_rect(&mut pm, r, [40 + (i * 13 % 90) as u8, 60 + (i * 7 % 80) as u8, 90 + (i * 11 % 100) as u8], 1.0, None);
+        }
+        for j in 0..5u32 {
+            if let Some(r) = tiny_skia::Rect::from_xywh(x as f32 + 14.0, y as f32 + 20.0 + j as f32 * 26.0, 180.0 + (j * 17 % 60) as f32, 8.0) {
+                draw::fill_rect(&mut pm, r, [200, 205, 215], 1.0, None);
+            }
+        }
+    }
+    pm
+}
+
 fn alpha_at(img: &tiny_skia::Pixmap, x: u32, y: u32) -> u8 {
     img.data()[((y * img.width() + x) * 4 + 3) as usize]
 }
@@ -51,11 +69,13 @@ pub fn run(dir: &Path) -> i32 {
     std::fs::create_dir_all(dir).ok();
     let mut c = Check { fails: 0 };
     let t0 = std::time::Instant::now();
+    // Экран недоступен (заблокирован, сеанс отключён): два нарисованных монитора,
+    // проверкам выделения, фигур и панелей настоящий снимок не нужен.
     let shots = match capture::capture_all() {
-        Ok(s) => s,
-        Err(e) => {
-            println!("FAIL capture: {e}");
-            return 1;
+        Ok(s) if !s.is_empty() => s,
+        r => {
+            println!("INFO capture unavailable ({}), using synthetic monitors", r.err().unwrap_or_else(|| "no monitors".into()));
+            (0..2).map(|i| capture::MonitorShot { x: i * 1920, y: 0, pixmap: synthetic_screen(1920, 1080, i as u8) }).collect()
         }
     };
     println!("INFO captured {} monitors in {:?}", shots.len(), t0.elapsed());
@@ -394,7 +414,10 @@ pub fn run(dir: &Path) -> i32 {
     output::save_png(&frame, &dir.join("frame_idle.png")).ok();
 
     // Панель инструментов: каждый инструмент ровно один раз, кнопки не перекрываются.
-    let l = crate::ui::layout(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 1.0, false, false, None);
+    let args = |bbox: tiny_skia::Rect, mw: f32, mh: f32, cols: usize, style_pop: Option<Option<crate::shapes::Tool>>, save_menu: bool, tools_at: Option<(f32, f32)>| {
+        crate::ui::layout(&crate::ui::LayoutArgs { bbox, mw, mh, s: 1.0, save_menu, style_pop, tools_at, cols, font: None })
+    };
+    let l = args(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 2, None, false, None);
     for t in crate::shapes::Tool::ALL {
         let n = l.buttons.iter().filter(|(b, _)| *b == crate::ui::Btn::Tool(t)).count();
         c.ok(&format!("toolbar has {t:?} once"), n == 1);
@@ -404,14 +427,36 @@ pub fn run(dir: &Path) -> i32 {
     });
     c.ok("toolbar buttons do not overlap", !overlap);
     // Низкий монитор: группы уходят в соседний столбец и помещаются по высоте.
-    let low = crate::ui::layout(tiny_skia::Rect::from_xywh(50.0, 50.0, 200.0, 100.0).unwrap(), 800.0, 300.0, 1.0, false, false, None);
+    let low = args(tiny_skia::Rect::from_xywh(50.0, 50.0, 200.0, 100.0).unwrap(), 800.0, 300.0, 2, None, false, None);
     c.ok("toolbar fits low monitor", low.panels[0].bottom() <= 300.0);
+    let low1 = args(tiny_skia::Rect::from_xywh(50.0, 50.0, 200.0, 100.0).unwrap(), 800.0, 300.0, 1, None, false, None);
+    c.ok("one-column toolbar fits low monitor", low1.panels[0].bottom() <= 300.0);
+    let one = args(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 1, None, false, None);
+    c.ok("one column is narrower", one.panels[0].width() < l.panels[0].width());
+    // Кнопка стиля в две колонки: плитка на обе колонки.
+    let style_w = |l: &crate::ui::Layout| l.buttons.iter().find(|(b, _)| *b == crate::ui::Btn::Style).map(|(_, r)| r.width());
+    c.ok("style tile spans two columns", style_w(&l) == Some(64.0) && style_w(&one) == Some(32.0));
+    // Окно стиля: 8 цветов, у стрелки 5 размеров, у закрашенного прямоугольника размеров нет.
+    let count = |l: &crate::ui::Layout, f: fn(&crate::ui::Btn) -> bool| l.buttons.iter().filter(|(b, _)| f(b)).count();
+    let pop = args(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 2, Some(Some(crate::shapes::Tool::Arrow)), false, None);
+    let pop_fr = args(tiny_skia::Rect::from_xywh(100.0, 100.0, 400.0, 300.0).unwrap(), 1920.0, 1080.0, 2, Some(None), false, None);
+    c.ok(
+        "style popover: colors and presets",
+        count(&pop, |b| matches!(b, crate::ui::Btn::Swatch(_))) == 8
+            && count(&pop, |b| matches!(b, crate::ui::Btn::Preset(_))) == 5
+            && count(&pop_fr, |b| matches!(b, crate::ui::Btn::Preset(_))) == 0,
+    );
+    c.ok("style popover opens away from the selection", pop.panels.last().is_some_and(|p| p.left() >= pop.panels[0].right()));
+    // Действия: главная «Копировать» шире обычной кнопки.
+    let copy_w = l.buttons.iter().find(|(b, _)| *b == crate::ui::Btn::Copy).map(|(_, r)| r.width()).unwrap_or(0.0);
+    c.ok("copy button carries a label", copy_w > 64.0);
 
     ocr_check(&mut c, dir);
     history_check(&mut c);
     edit_check(&mut c, dir, draw::load_font().map(Arc::new));
     fixes_check(&mut c, draw::load_font().map(Arc::new));
     fixes2_check(&mut c, draw::load_font().map(Arc::new));
+    panels_check(&mut c, dir, draw::load_font().map(Arc::new));
 
     println!("{} failures", c.fails);
     if c.fails == 0 { 0 } else { 1 }
@@ -817,16 +862,42 @@ fn fixes_check(c: &mut Check, font: Option<Arc<ab_glyph::FontVec>>) {
         c.ok("fix: nudge stays on the monitor", l <= 1000.0);
     }
 
-    // 4. Палитра над панелью действий: клик по цвету выбирает цвет.
-    let l = crate::ui::layout(tiny_skia::Rect::from_xywh(600.0, 300.0, 600.0, 324.0).unwrap(), 1920.0, 1080.0, 1.0, true, false, None);
-    let swatches: Vec<_> = l.buttons.iter().filter(|(b, _)| matches!(b, crate::ui::Btn::Swatch(_))).collect();
-    let covered = swatches
-        .iter()
-        .filter(|(_, r)| l.buttons.iter().any(|(b, q)| matches!(b, crate::ui::Btn::Close | crate::ui::Btn::Copy | crate::ui::Btn::Save | crate::ui::Btn::Pin) && q.intersect(r).is_some()))
-        .count();
-    println!("INFO palette swatches over action buttons: {covered}");
-    let all_hit = swatches.iter().all(|(b, r)| l.hit(r.left() + r.width() / 2.0, r.top() + r.height() / 2.0) == Some(*b));
-    c.ok("fix: palette swatches win over buttons under them", !swatches.is_empty() && all_hit);
+    // 4. Клик достаётся верхней панели: панель инструментов перетащена на панель
+    //    действий, открыты окно стиля и меню сохранения. Центр любой кнопки попадает в
+    //    неё саму или в кнопку панели выше; кнопки окна стиля и меню всегда в себя.
+    let bbox = tiny_skia::Rect::from_xywh(600.0, 300.0, 600.0, 324.0).unwrap();
+    let (mut overlapping, mut consistent, mut top_win) = (0, true, true);
+    for gx in 0..24 {
+        for gy in 0..14 {
+            let l = crate::ui::layout(&crate::ui::LayoutArgs {
+                bbox,
+                mw: 1920.0,
+                mh: 1080.0,
+                s: 1.0,
+                save_menu: true,
+                style_pop: Some(Some(crate::shapes::Tool::Arrow)),
+                tools_at: Some((gx as f32 * 80.0, gy as f32 * 80.0)),
+                cols: 2,
+                font: None,
+            });
+            let pairs: Vec<_> = l.buttons.iter().zip(&l.owner).collect();
+            if pairs.iter().any(|((_, r), o)| pairs.iter().any(|((_, q), o2)| o2 > o && q.intersect(r).is_some())) {
+                overlapping += 1;
+            }
+            // Кнопка нажимается сама, если её не закрывает панель выше; закрыта: клик
+            // достаётся верхней панели (её кнопке или пустому месту на ней).
+            consistent &= pairs.iter().all(|((b, r), o)| {
+                let (x, y) = (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0);
+                let covered = l.panels.iter().enumerate().any(|(i, p)| i > **o && x >= p.left() && x < p.right() && y >= p.top() && y < p.bottom());
+                let hit = l.hit(x, y);
+                if covered { hit != Some(*b) && hit.is_none_or(|h| pairs.iter().any(|((b2, _), o2)| *b2 == h && o2 > o)) } else { hit == Some(*b) }
+            });
+            top_win &= l.buttons.iter().zip(&l.owner).filter(|(_, o)| **o == l.panels.len() - 1).all(|((b, r), _)| l.hit(r.left() + r.width() / 2.0, r.top() + r.height() / 2.0) == Some(*b));
+        }
+    }
+    println!("INFO layouts with overlapping panels: {overlapping} of 336");
+    let consistent = consistent && overlapping > 0;
+    c.ok("fix: clicks go to the topmost panel", consistent && top_win);
 
     // 11. Сразу после переноса панели её снова можно тащить (не двойной клик).
     {
@@ -1074,4 +1145,60 @@ fn fixes2_check(c: &mut Check, font: Option<Arc<ab_glyph::FontVec>>) {
         let ok = matches!(s.shapes()[0].kind, Kind::Rect(a, _) if a.0 == a.0.round() && a.0 - 1.5 <= 1000.0 && a.0 > 990.0);
         c.ok("fix2: nudge keeps whole pixels and stays on the monitor", ok);
     }
+}
+
+/// Панели в стиле Photoshop: окно стиля, готовые размеры, колонки, подсказка.
+fn panels_check(c: &mut Check, dir: &Path, font: Option<Arc<ab_glyph::FontVec>>) {
+    use crate::ui::Btn;
+    let mut img = tiny_skia::Pixmap::new(1600, 900).unwrap();
+    img.fill(tiny_skia::Color::from_rgba8(60, 90, 140, 255));
+    let shot = crate::capture::MonitorShot { x: 0, y: 0, pixmap: img };
+    let mut s = Session::new(vec![shot], vec![1.0], 0.5, 0xE24B4A, 4.0, font);
+    drag(&mut s, 0, (200.0, 150.0), (900.0, 600.0));
+    s.on_key(Some(KeyCode::Digit4), None, None);
+    let center = |r: tiny_skia::Rect| (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0);
+    let click = |s: &mut Session, b: Btn| {
+        let Some(r) = s.button_rect(b) else { return Action::None };
+        let (x, y) = center(r);
+        let a = s.on_left_press(0, x, y);
+        s.on_left_release(0, x, y);
+        a
+    };
+    click(&mut s, Btn::Style);
+    c.ok("panels: style popover opens", s.button_rect(Btn::Swatch(0)).is_some() && s.button_rect(Btn::Preset(4)).is_some());
+    click(&mut s, Btn::Swatch(3));
+    c.ok("panels: swatch sets color, popover stays", s.color == crate::ui::PALETTE[3] && s.button_rect(Btn::Preset(0)).is_some());
+    click(&mut s, Btn::Preset(4));
+    c.ok("panels: preset sets width", s.width == 16.0);
+    // Смена инструмента не закрывает окно, размеры под новый инструмент; у
+    // закрашенного прямоугольника размеров нет, только цвета.
+    s.on_key(Some(KeyCode::Digit6), None, None);
+    let text_presets = s.button_rect(Btn::Preset(0)).is_some();
+    s.on_key(Some(KeyCode::Digit8), None, None);
+    let frect_colors_only = s.button_rect(Btn::Swatch(0)).is_some() && s.button_rect(Btn::Preset(0)).is_none();
+    s.on_key(Some(KeyCode::Digit4), None, None);
+    c.ok("panels: popover follows the tool", text_presets && frect_colors_only && s.button_rect(Btn::Preset(4)).is_some());
+    // Подсказка у карандаша и открытое окно стиля: кадр для глаза.
+    if let Some(r) = s.button_rect(Btn::Tool(crate::shapes::Tool::Pencil)) {
+        let (x, y) = center(r);
+        s.on_move(0, x, y);
+    }
+    let frame = s.render(0).clone();
+    output::save_png(&frame, &dir.join("frame_panels.png")).ok();
+    // Колесо над выделением: число у курсора (кадр), плитка показывает толщину.
+    s.on_move(0, 500.0, 400.0);
+    s.on_wheel(1.0);
+    c.ok("panels: wheel changes width", s.width == 17.0);
+    let frame = s.render(0).clone();
+    output::save_png(&frame, &dir.join("frame_wheel_chip.png")).ok();
+    // Esc закрывает окно стиля, а не снимок.
+    c.ok("panels: esc closes the popover first", s.on_key(None, Some(NamedKey::Escape), None) == Action::None && s.button_rect(Btn::Swatch(0)).is_none());
+    // Двойная стрелка: одна колонка, настройка уходит в App.
+    let w2 = s.tools_rect().map(|r| r.width());
+    let act = click(&mut s, Btn::Columns);
+    let w1 = s.tools_rect().map(|r| r.width());
+    c.ok("panels: columns toggle", act == Action::ToolColumns(1) && w1 < w2);
+    let frame = s.render(0).clone();
+    output::save_png(&frame, &dir.join("frame_one_column.png")).ok();
+    c.ok("panels: columns toggle back", click(&mut s, Btn::Columns) == Action::ToolColumns(2));
 }

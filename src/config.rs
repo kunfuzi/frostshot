@@ -38,6 +38,8 @@ pub struct Config {
     pub history_days: u32,
     /// SVG: сохранять и фигуры целиком вне выделения (невидимые, за краем листа).
     pub svg_outside: bool,
+    /// Колонок в панели инструментов оверлея: 1 или 2.
+    pub tool_columns: usize,
 }
 
 impl Default for Config {
@@ -64,6 +66,7 @@ impl Default for Config {
             history_max: 10,
             history_days: 7,
             svg_outside: false,
+            tool_columns: 2,
         }
     }
 }

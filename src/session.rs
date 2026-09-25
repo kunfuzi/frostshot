@@ -23,6 +23,8 @@ pub enum Action {
     Pin,
     /// Распознать текст выделения и скопировать его.
     CopyText,
+    /// Переключили число колонок панели инструментов (1 или 2): запомнить в настройках.
+    ToolColumns(usize),
     /// Найти и запикселить личные данные в выделении.
     AutoHide,
     /// Выделение закончено (новое, сдвинутое, изменённое): повод для автоскрытия.
@@ -141,7 +143,10 @@ pub struct Session {
     drag: Drag,
     cursor: Option<(usize, Pt)>,
     text: Option<TextEdit>,
-    palette_open: bool,
+    /// Открыто окно стиля (цвет и толщина).
+    style_pop: bool,
+    /// Колонок в панели инструментов: 1 или 2 (из настроек).
+    pub tool_cols: usize,
     hover: Option<Btn>,
     font: Option<Arc<FontVec>>,
     pub mods: Mods,
@@ -252,7 +257,8 @@ impl Session {
             drag: Drag::None,
             cursor: None,
             text: None,
-            palette_open: false,
+            style_pop: false,
+            tool_cols: 2,
             hover: None,
             font,
             mods: Mods::default(),
@@ -311,7 +317,7 @@ impl Session {
         self.series = None;
         self.cursor = None;
         self.hover = None;
-        self.palette_open = false;
+        self.style_pop = false;
         self.save_menu = false;
         self.mods = Mods::default();
         self.sync();
@@ -415,7 +421,31 @@ impl Session {
         let (x0, y0) = v.to_scr(b.x as f32, b.y as f32);
         let r = Rect::from_xywh(x0, y0, b.w as f32 * v.z, b.h as f32 * v.z)?;
         let at = self.tools_at.filter(|(m, _)| *m == mon).map(|(_, p)| p);
-        Some(ui::layout(r, w as f32, h as f32, self.scales[mon], self.palette_open, self.save_menu, at))
+        Some(ui::layout(&ui::LayoutArgs {
+            bbox: r,
+            mw: w as f32,
+            mh: h as f32,
+            s: self.scales[mon],
+            save_menu: self.save_menu,
+            style_pop: self.style_pop.then(|| self.style_target().0),
+            tools_at: at,
+            cols: self.tool_cols,
+            font: self.font.as_deref(),
+        }))
+    }
+
+    /// Чей стиль в плитке и окне стиля: выбранной курсором фигуры или кисти.
+    /// Инструмент None: толщины нет (курсор без фигуры, выделение, закрашенный
+    /// прямоугольник), только цвет.
+    fn style_target(&self) -> (Option<Tool>, f32, draw::Rgb) {
+        let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|_| self.tool == Tool::Pointer);
+        match picked {
+            Some(sh) => {
+                let t = Tool::of(&sh.kind);
+                (ui::width_spec(t).map(|_| t), sh.width, sh.color)
+            }
+            None => (ui::width_spec(self.tool).map(|_| self.tool), self.width, draw::rgb(self.color)),
+        }
     }
 
     fn commit_text(&mut self) {
@@ -560,11 +590,12 @@ impl Session {
         Some((s.x + b.x as i32, s.y + b.y as i32, self.scales[m]))
     }
 
+    /// Окно стиля при смене инструмента не закрывается: размеры в нём сразу
+    /// перестраиваются под новый инструмент (как в мокапе).
     fn set_tool(&mut self, t: Tool) {
         self.commit_text();
         self.tool = t;
         self.picked = None;
-        self.palette_open = false;
         self.mark_sel();
     }
 
@@ -625,28 +656,46 @@ impl Session {
     fn click_btn(&mut self, b: Btn) -> Action {
         match b {
             Btn::Tool(t) => self.set_tool(t),
-            Btn::Color => {
-                self.palette_open = !self.palette_open;
+            Btn::Style => {
+                self.style_pop = !self.style_pop;
                 self.save_menu = false;
             }
+            // Окно стиля остаётся открытым: цвет и размер выбирают подряд.
             Btn::Swatch(i) => {
                 self.color = ui::PALETTE[i];
-                self.palette_open = false;
                 if let Some(k) = self.picked {
                     self.snapshot();
                     self.shapes[k].color = draw::rgb(self.color);
                 }
+            }
+            Btn::Preset(i) => {
+                if let Some(spec) = self.style_target().0.and_then(ui::width_spec) {
+                    let v = spec.presets[i];
+                    match self.picked {
+                        Some(k) => {
+                            if self.shapes[k].width != v {
+                                self.snapshot();
+                                self.shapes[k].width = v;
+                            }
+                        }
+                        None => self.width = v,
+                    }
+                }
+            }
+            Btn::Columns => {
+                self.tool_cols = if self.tool_cols == 2 { 1 } else { 2 };
+                self.mark_sel();
+                return Action::ToolColumns(self.tool_cols);
             }
             Btn::Undo => self.undo(),
             Btn::Redo => self.redo_last(),
             Btn::Pin => return Action::Pin,
             Btn::CopyText => return Action::CopyText,
             Btn::AutoHide => return Action::AutoHide,
-            Btn::Upload => {}
             Btn::Copy => return Action::Copy,
             Btn::Save => {
                 self.save_menu = !self.save_menu;
-                self.palette_open = false;
+                self.style_pop = false;
             }
             Btn::SavePng => {
                 self.save_menu = false;
@@ -871,8 +920,8 @@ impl Session {
                 }
             }
         }
-        if self.palette_open || self.save_menu {
-            self.palette_open = false;
+        if self.style_pop || self.save_menu {
+            self.style_pop = false;
             self.save_menu = false;
             self.mark_sel();
         }
@@ -1302,8 +1351,8 @@ impl Session {
                 if !matches!(self.drag, Drag::None) {
                     return self.cancel_drag();
                 }
-                if self.palette_open || self.save_menu {
-                    self.palette_open = false;
+                if self.style_pop || self.save_menu {
+                    self.style_pop = false;
                     self.save_menu = false;
                     self.mark_sel();
                     return Action::None;
@@ -1480,6 +1529,7 @@ impl Session {
             }
         }
         let layout = if is_active { self.layout() } else { None };
+        let (style_tool, style_width, style_color) = self.style_target();
         let s = self.scales[mon];
         let view = self.views[mon];
         let font = self.font.clone();
@@ -1605,52 +1655,48 @@ impl Session {
             if let Some(l) = &layout {
                 let over_ui = cursor.is_some_and(|(x, y)| l.over_panel(x, y));
                 if let (Some((x, y)), false) = (cursor, over_ui) {
-                    if !self.tool.is_selection() && !matches!(self.tool, Tool::Text | Tool::Pointer) && matches!(self.drag, Drag::None) {
-                        let r = match self.tool {
-                            Tool::Marker => shapes::marker_width(self.width) / 2.0,
-                            Tool::Counter => shapes::counter_radius(self.width),
-                            _ => self.width / 2.0,
+                    if !self.tool.is_selection() && !matches!(self.tool, Tool::Text | Tool::Pointer | Tool::FilledRect) && matches!(self.drag, Drag::None) {
+                        // Круг кисти реального размера (у пикселизации квадрат блока).
+                        let (d, square) = match self.tool {
+                            Tool::Marker => (shapes::marker_width(self.width), false),
+                            Tool::Counter => (2.0 * shapes::counter_radius(self.width), false),
+                            Tool::Pixelate => ((8.0 + self.width * 2.0).max(2.0), true),
+                            _ => (self.width, false),
                         };
-                        draw::circle(frame, x, y, (r * view.z).max(2.0), draw::rgb(self.color), 1.0, false, 1.0);
+                        let d = d * view.z;
+                        ui::brush_ring(frame, x, y, d, square, s);
+                        // После прокрутки колеса рядом на секунду число.
+                        if let (Some(f), Some(t0)) = (font, self.width_hint_at) {
+                            if t0.elapsed() < WIDTH_HINT {
+                                let r = d.max(4.0 * s) / 2.0;
+                                ui::chip(frame, f, &ui::width_text(self.tool, self.width), x + r + 8.0 * s, y - r - 22.0 * s, s);
+                            }
+                        }
                     }
                 }
                 let st = ui::UiState {
                     tool: self.tool,
-                    color: self.color,
                     hover: self.hover,
                     can_undo: !self.undo_stack.is_empty() || self.text.is_some() || (self.pop_loaded && !self.shapes.is_empty()),
                     can_redo: !self.redo.is_empty(),
                     font,
                     scale: s,
+                    cols: self.tool_cols,
+                    style_tool,
+                    style_width,
+                    style_color,
+                    style_open: self.style_pop,
                 };
                 ui::draw_layout(frame, l, &st);
 
-                // Постоянная плашка толщины у панели инструментов, вне выделения.
-                let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|sh| self.tool == Tool::Pointer && sh.has_width());
-                let hint = match picked {
-                    Some(sh) => Some((Tool::of(&sh.kind), sh.width, sh.color)),
-                    None => ui::has_width(self.tool).then(|| (self.tool, self.width, draw::rgb(self.color))),
-                };
-                if let (Some((t, w, c)), Some(f), Some(bb)) = (hint, font, sel.bbox()) {
-                    let (x0, y0) = view.to_scr(bb.x as f32, bb.y as f32);
-                    let sr = Rect::from_xywh(x0, y0, bb.w as f32 * view.z, bb.h as f32 * view.z);
-                    let (hw, hh) = ui::width_hint_size(f, t, w, view.z, s);
-                    let (fw, fh) = (frame.width() as f32, frame.height() as f32);
-                    if let Some((hx, hy)) = sr.and_then(|sr| ui::width_hint_spot(l, sr, hw, hh, fw, fh, s)) {
-                        ui::draw_width_hint(frame, f, t, w, c, view.z, hx, hy, s);
-                    }
-                }
             }
         }
 
-        // Образец толщины у курсора после прокрутки колеса.
-        if let (Some((x, y)), Some(t0), Some(f)) = (cursor, self.width_hint_at, font) {
-            if t0.elapsed() < WIDTH_HINT {
-                // Образец выбранной фигуры или кисти.
-                let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|_| self.tool == Tool::Pointer);
-                if picked.is_none_or(|sh| sh.has_width()) {
-                    let (t, w, c) = picked.map_or((self.tool, self.width, draw::rgb(self.color)), |sh| (Tool::of(&sh.kind), sh.width, sh.color));
-                    ui::width_hint(frame, f, t, w, c, view.z, x, y, s);
+        // Число у курсора после прокрутки колеса над выбранной фигурой.
+        if let (Some((x, y)), Some(f), Some(t0)) = (cursor, font, self.width_hint_at) {
+            if t0.elapsed() < WIDTH_HINT && self.tool == Tool::Pointer {
+                if let Some(sh) = self.picked.and_then(|k| self.shapes.get(k)).filter(|sh| sh.has_width()) {
+                    ui::chip(frame, f, &ui::width_text(Tool::of(&sh.kind), sh.width), x + 14.0 * s, y - 30.0 * s, s);
                 }
             }
         }
@@ -1694,6 +1740,11 @@ impl Session {
     }
     pub fn picked(&self) -> Option<usize> {
         self.picked
+    }
+    /// Кнопка панелей на экране (для самопроверки и кадров сайта).
+    pub fn button_rect(&self, b: Btn) -> Option<Rect> {
+        let l = self.layout()?;
+        l.buttons.iter().find(|(x, _)| *x == b).map(|(_, r)| *r)
     }
     /// Панель инструментов на экране (для самопроверки).
     pub fn tools_rect(&self) -> Option<Rect> {

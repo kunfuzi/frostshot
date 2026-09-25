@@ -64,22 +64,23 @@ impl Tool {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// Подсказка к кнопке: название, клавиша, пояснение.
+    pub fn tip(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Tool::Pointer => "Курсор (V): выбрать и двигать фигуры",
-            Tool::SelectRect => "Рамка (M) · Shift: добавить, Alt: вычесть",
-            Tool::SelectLasso => "Лассо (L) · Shift: добавить, Alt: вычесть",
-            Tool::Pencil => "Карандаш (1)",
-            Tool::Marker => "Маркер (2)",
-            Tool::Line => "Линия (3)",
-            Tool::Arrow => "Стрелка (4)",
-            Tool::Rect => "Прямоугольник (5, Shift: квадрат)",
-            Tool::FilledRect => "Закрашенный прямоугольник (8)",
-            Tool::Ellipse => "Эллипс (9, Shift: круг)",
-            Tool::Counter => "Счётчик (0): тяни от номера к цели, с Shift от цели",
-            Tool::Text => "Текст (6)",
-            Tool::Pixelate => "Пикселизация (7)",
-            Tool::Ruler => "Линейка (R, Shift: 45°)",
+            Tool::Pointer => ("Курсор", "V", "выбрать и двигать фигуры"),
+            Tool::SelectRect => ("Рамка", "M", "Shift: добавить, Alt: вычесть"),
+            Tool::SelectLasso => ("Лассо", "L", "Shift: добавить, Alt: вычесть"),
+            Tool::Pencil => ("Карандаш", "1", ""),
+            Tool::Marker => ("Маркер", "2", ""),
+            Tool::Line => ("Линия", "3", "Shift: 45°"),
+            Tool::Arrow => ("Стрелка", "4", "Shift: 45°"),
+            Tool::Rect => ("Прямоугольник", "5", "Shift: квадрат"),
+            Tool::FilledRect => ("Закрашенный прямоугольник", "8", ""),
+            Tool::Ellipse => ("Эллипс", "9", "Shift: круг"),
+            Tool::Counter => ("Счётчик", "0", "тяните от номера к цели, с Shift от цели"),
+            Tool::Text => ("Текст", "6", ""),
+            Tool::Pixelate => ("Пикселизация", "7", ""),
+            Tool::Ruler => ("Линейка", "R", "пиксели и миллиметры, Shift: 45°"),
         }
     }
 

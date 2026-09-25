@@ -103,7 +103,8 @@ impl App {
         platform::dismiss_shell_flyout();
         let rects: Vec<_> = shots.iter().map(|s| (s.x, s.y, s.width(), s.height())).collect();
         let Some((wins, scales)) = self.create_windows(el, &rects) else { return };
-        let session = Session::new(shots, scales, self.config.dim, self.config.color, self.config.width, self.font.clone());
+        let mut session = Session::new(shots, scales, self.config.dim, self.config.color, self.config.width, self.font.clone());
+        session.tool_cols = self.config.tool_columns;
         self.show_overlay(session, wins, false);
         log::info!("overlay shown in {:?}", t0.elapsed());
     }
@@ -154,7 +155,8 @@ impl App {
                 log::warn!("project {}x{} larger than any monitor, cropped view", h.width, h.height);
             }
             let (p, s) = (m.position(), m.size());
-            let session = Session::from_project(&bytes, p.x, p.y, m.scale_factor() as f32, self.config.dim, self.font.clone())?;
+            let mut session = Session::from_project(&bytes, p.x, p.y, m.scale_factor() as f32, self.config.dim, self.font.clone())?;
+            session.tool_cols = self.config.tool_columns;
             Ok((session, (p.x, p.y, s.width, s.height)))
         });
         match res {
@@ -324,6 +326,10 @@ impl App {
         match action {
             Action::None => {}
             Action::Close => self.close_overlay(),
+            Action::ToolColumns(n) => {
+                self.config.tool_columns = n;
+                self.config.save();
+            }
             Action::Copy => {
                 let Some(img) = self.overlay.as_mut().and_then(|o| o.session.result()) else { return };
                 if self.clipboard.is_none() {
