@@ -94,9 +94,9 @@ pub struct Settings {
 const TABS: [&str; 4] = ["Общие", "Сохранение", "Захват", "Клавиши"];
 
 const KEYS: [(&str, &str); 23] = [
-    ("V", "курсор: выбрать и двигать фигуры"),
+    ("V", "курсор: правка фигур"),
     ("M / L", "рамка / лассо"),
-    ("Delete, стрелки", "удалить, сдвинуть фигуру (Shift: 10 px)"),
+    ("Delete, стрелки", "удалить, сдвинуть"),
     ("1-9, 0", "инструменты"),
     ("Shift + протягивание", "добавить область"),
     ("Alt + протягивание", "вырезать область"),
@@ -115,8 +115,8 @@ const KEYS: [(&str, &str); 23] = [
     ("Ctrl+C, Enter", "копировать"),
     ("Ctrl+S", "сохранить как"),
     ("Ctrl+Shift+S", "сохранить сразу"),
-    ("Правый клик", "снять выбор фигуры, сбросить выделение"),
-    ("Esc", "снять выбор фигуры, закрыть"),
+    ("Правый клик", "снять выбор, сбросить"),
+    ("Esc", "снять выбор, закрыть"),
 ];
 
 fn contains(r: &Rect, x: f32, y: f32) -> bool {
@@ -638,13 +638,6 @@ impl Settings {
                     };
                     text(pm, &status, pad, y, small, color);
                     y += gap_line;
-                    // Сторонние программы со своим перехватом PrintScreen.
-                    if !sh.rivals.is_empty() {
-                        text(pm, &format!("PrintScreen может перехватывать: {}", sh.rivals.join(", ")), pad, y, small, ERR);
-                        y += gap_line;
-                        text(pm, "Выключите в ней клавишу PrintScreen или закройте её", pad, y, small, MUTED);
-                        y += gap_line;
-                    }
                     let mut bx = pad;
                     if !sh.registered {
                         bx += button(pm, rects, Ctl::ShellRegister, bx, y, "Зарегистрировать Frostshot", false) + 8.0 * s;

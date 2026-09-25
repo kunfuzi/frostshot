@@ -305,7 +305,9 @@ pub fn run(dir: &Path) -> i32 {
         }
     }
     if let Some(evil) = craft_evil(&bytes, r#"{"kind":{"Line":[[1e39,0.0],[5.0,5.0]]},"color":[0,0,0],"width":3.0}"#) {
-        c.ok("non-finite coordinates rejected", Session::from_project(&evil, 0, 0, 1.0, 0.5, None).is_err());
+        // Битая фигура пропадает, проект открывается (или файл целиком отклонён).
+        let ok = Session::from_project(&evil, 0, 0, 1.0, 0.5, None).map_or(true, |p| p.shapes().is_empty());
+        c.ok("non-finite coordinates: shape dropped", ok);
     }
     c.ok("garbage is not a project", Session::from_project(b"PNG junk", 0, 0, 1.0, 0.5, None).is_err());
     let mut cut = bytes.clone();
@@ -409,11 +411,7 @@ pub fn run(dir: &Path) -> i32 {
     history_check(&mut c);
     edit_check(&mut c, dir, draw::load_font().map(Arc::new));
     fixes_check(&mut c, draw::load_font().map(Arc::new));
-
-    // Список процессов читается: в нём есть сам Frostshot.
-    let procs = crate::platform::running_processes();
-    c.ok("process list contains frostshot.exe", procs.iter().any(|p| p == "frostshot.exe"));
-    println!("INFO printscreen rivals running: {:?}", crate::platform::printscreen_rivals());
+    fixes2_check(&mut c, draw::load_font().map(Arc::new));
 
     println!("{} failures", c.fails);
     if c.fails == 0 { 0 } else { 1 }
@@ -751,6 +749,8 @@ fn fixes_check(c: &mut Check, font: Option<Arc<ab_glyph::FontVec>>) {
         click(&mut s, tx, ty);
         click(&mut s, tx, ty);
         let hidden = s.apply_hide(&[tiny_skia::Rect::from_xywh(500.0, 200.0, 50.0, 20.0).unwrap()]);
+        // Редактор остаётся открытым; закрыть без изменений, затем отмена скрытия.
+        s.on_key(None, Some(NamedKey::Escape), None);
         ctrl_z(&mut s, false);
         let has_text = s.shapes().iter().any(|x| matches!(x.kind, Kind::Text { .. }));
         let pix = s.shapes().iter().filter(|x| matches!(x.kind, Kind::Pixelate(..))).count();
@@ -853,5 +853,188 @@ fn fixes_check(c: &mut Check, font: Option<Arc<ab_glyph::FontVec>>) {
         let mut p = Session::from_project(&bytes, 0, 0, 1.0, 0.5, None).unwrap();
         let svg = p.to_svg(false).unwrap();
         c.ok("fix: old project ruler stays in pixels", svg.contains("200 px") && !svg.contains("мм"));
+    }
+}
+
+/// Второй раунд: находки проверки исправлений.
+fn fixes2_check(c: &mut Check, font: Option<Arc<ab_glyph::FontVec>>) {
+    use crate::shapes::{Kind, Shape};
+    let fresh = |font: Option<Arc<ab_glyph::FontVec>>| {
+        let mut img = tiny_skia::Pixmap::new(1000, 800).unwrap();
+        img.fill(tiny_skia::Color::from_rgba8(60, 90, 140, 255));
+        let shot = crate::capture::MonitorShot { x: 0, y: 0, pixmap: img };
+        let mut s = Session::new(vec![shot], vec![1.0], 0.5, 0xE24B4A, 4.0, font);
+        drag(&mut s, 0, (150.0, 150.0), (650.0, 450.0));
+        s
+    };
+    let click = |s: &mut Session, x: f32, y: f32| {
+        s.on_left_press(0, x, y);
+        s.on_left_release(0, x, y);
+    };
+    let ctrl_z = |s: &mut Session, shift: bool| {
+        s.mods = Mods { ctrl: true, shift, ..Default::default() };
+        s.on_key(Some(KeyCode::KeyZ), None, None);
+        s.mods = Mods::default();
+    };
+    let count = |s: &Session, f: fn(&Kind) -> bool| s.shapes().iter().filter(|x| f(&x.kind)).count();
+
+    // Снятие фигур большого проекта по одной не копирует весь список.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        drag(&mut s, 0, (200.0, 200.0), (300.0, 200.0));
+        let (mut h, shot) = s.project_parts().unwrap();
+        let pencil = Shape { kind: Kind::Pencil((0..190_000).map(|i| ((i % 900) as f32, (i / 900) as f32)).collect()), color: [1, 2, 3], width: 2.0 };
+        h.shapes = std::iter::once(pencil)
+            .chain((0..9_999).map(|i| Shape { kind: Kind::Counter { at: (200.0, 200.0), n: i, tip: None }, color: [1, 2, 3], width: 4.0 }))
+            .collect();
+        let bytes = crate::project::build(h, &shot).unwrap();
+        let mut p = Session::from_project(&bytes, 0, 0, 1.0, 0.5, None).unwrap();
+        let t0 = std::time::Instant::now();
+        for _ in 0..3000 {
+            ctrl_z(&mut p, false);
+        }
+        for _ in 0..1000 {
+            ctrl_z(&mut p, true);
+        }
+        let took = t0.elapsed();
+        println!("INFO 3000 undo + 1000 redo on a 10000-shape project: {took:?}");
+        c.ok("fix2: project undo/redo without list copies", took < std::time::Duration::from_secs(2) && p.shapes().len() == 8_000);
+    }
+
+    // Автоскрытие во время правки текста не закрывает редактор; отмена по шагам.
+    {
+        let mut s = fresh(font.clone());
+        s.on_key(Some(KeyCode::Digit6), None, None);
+        click(&mut s, 300.0, 300.0);
+        s.on_key(Some(KeyCode::KeyH), None, Some("Hi"));
+        s.on_key(None, Some(NamedKey::Escape), None);
+        let at = match s.shapes()[0].kind {
+            Kind::Text { at, .. } => at,
+            _ => (0.0, 0.0),
+        };
+        s.on_key(Some(KeyCode::KeyV), None, None);
+        click(&mut s, at.0 + 4.0, at.1 + 8.0);
+        click(&mut s, at.0 + 4.0, at.1 + 8.0);
+        s.apply_hide(&[tiny_skia::Rect::from_xywh(500.0, 200.0, 50.0, 20.0).unwrap()]);
+        // Буква p во время правки: символ текста, а не «закрепить».
+        let act = s.on_key(Some(KeyCode::KeyP), None, Some("p"));
+        s.on_key(None, Some(NamedKey::Escape), None);
+        let text_is = |s: &Session, want: &str| s.shapes().iter().any(|x| matches!(&x.kind, Kind::Text { text, .. } if text == want));
+        c.ok("fix2: auto-hide keeps the text editor open", act == Action::None && text_is(&s, "Hip"));
+        ctrl_z(&mut s, false);
+        c.ok("fix2: undo text edit keeps auto-hide", text_is(&s, "Hi") && count(&s, |k| matches!(k, Kind::Pixelate(..))) == 1);
+        ctrl_z(&mut s, false);
+        c.ok("fix2: next undo removes auto-hide, text stays", text_is(&s, "Hi") && count(&s, |k| matches!(k, Kind::Pixelate(..))) == 0);
+    }
+
+    // Автоскрытие во время переноса фигуры применяется после него, отдельным шагом.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        drag(&mut s, 0, (200.0, 300.0), (300.0, 300.0));
+        s.on_key(Some(KeyCode::KeyV), None, None);
+        s.on_left_press(0, 250.0, 300.0);
+        s.on_move(0, 260.0, 340.0);
+        let n = s.apply_hide(&[tiny_skia::Rect::from_xywh(500.0, 200.0, 50.0, 20.0).unwrap()]);
+        let during = count(&s, |k| matches!(k, Kind::Pixelate(..)));
+        s.on_left_release(0, 260.0, 340.0);
+        let after = count(&s, |k| matches!(k, Kind::Pixelate(..)));
+        c.ok("fix2: auto-hide waits for the drag", n == 1 && during == 0 && after == 1);
+        ctrl_z(&mut s, false);
+        let moved = matches!(s.shapes()[0].kind, Kind::Line(a, _) if a == (210.0, 340.0));
+        c.ok("fix2: undo removes auto-hide, keeps the move", moved && count(&s, |k| matches!(k, Kind::Pixelate(..))) == 0);
+        ctrl_z(&mut s, false);
+        c.ok("fix2: next undo reverts the move", matches!(s.shapes()[0].kind, Kind::Line(a, _) if a == (200.0, 300.0)));
+    }
+
+    // Esc при переносе фигуры не стирает ветку повтора.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        drag(&mut s, 0, (200.0, 300.0), (300.0, 300.0));
+        drag(&mut s, 0, (200.0, 400.0), (300.0, 400.0));
+        ctrl_z(&mut s, false);
+        s.on_key(Some(KeyCode::KeyV), None, None);
+        s.on_left_press(0, 250.0, 300.0);
+        s.on_move(0, 251.0, 300.0);
+        s.on_key(None, Some(NamedKey::Escape), None);
+        s.on_left_release(0, 251.0, 300.0);
+        ctrl_z(&mut s, true);
+        c.ok("fix2: cancelled drag keeps redo", s.shapes().len() == 2);
+    }
+
+    // Двойной клик по заголовку срабатывает, даже если мышь дрогнула на 1-2 px.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        let r0 = s.tools_rect().unwrap();
+        let g = (r0.left() + r0.width() / 2.0, r0.top() + 4.0);
+        drag(&mut s, 0, g, (g.0 - 200.0, g.1));
+        let r1 = s.tools_rect().unwrap();
+        let g1 = (r1.left() + r1.width() / 2.0, r1.top() + 4.0);
+        s.on_left_press(0, g1.0, g1.1);
+        s.on_move(0, g1.0 + 1.0, g1.1 + 1.0);
+        s.on_left_release(0, g1.0 + 1.0, g1.1 + 1.0);
+        click(&mut s, g1.0 + 1.0, g1.1 + 1.0);
+        c.ok("fix2: grip double click survives 1 px jitter", s.tools_rect() == Some(r0));
+    }
+
+    // Без выделения Ctrl+Z ничего не меняет вслепую.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        drag(&mut s, 0, (200.0, 300.0), (300.0, 300.0));
+        s.on_key(Some(KeyCode::KeyM), None, None);
+        s.on_left_press(0, 50.0, 50.0);
+        s.on_move(0, 120.0, 120.0);
+        s.on_key(None, Some(NamedKey::Escape), None);
+        ctrl_z(&mut s, false);
+        drag(&mut s, 0, (100.0, 100.0), (700.0, 500.0));
+        c.ok("fix2: no blind undo without an area", s.shapes().len() == 1);
+    }
+
+    // Геометрия: тонкий и маленький эллипс, наконечник стрелки, засечки линейки.
+    let el = |a: (f32, f32), b: (f32, f32)| Shape { kind: Kind::Ellipse(a, b), color: [255, 0, 0], width: 4.0 };
+    c.ok("fix2: flat ellipse hit on its line", el((100.0, 100.0), (300.0, 100.0)).hit((150.0, 100.0), 5.0, None, None));
+    c.ok("fix2: small circle hit radius", !el((100.0, 100.0), (103.0, 103.0)).hit((111.5, 101.5), 5.0, None, None));
+    c.ok("fix2: small circle hit on its outline", el((100.0, 100.0), (110.0, 110.0)).hit((110.0, 105.0), 5.0, None, None));
+    let arrow = Shape { kind: Kind::Arrow((100.0, 100.0), (300.0, 100.0)), color: [255, 0, 0], width: 10.0 };
+    c.ok("fix2: arrow head triangle hit", arrow.hit((265.0, 85.0), 5.0, None, None) && !arrow.hit((320.0, 100.0), 5.0, None, None));
+    let thin = Shape { kind: Kind::Arrow((100.0, 100.0), (300.0, 100.0)), color: [255, 0, 0], width: 2.0 };
+    c.ok("fix2: thin arrow head hit when zoomed", thin.hit((288.0, 104.0), 0.3, None, None));
+    let ruler = Shape { kind: Kind::Ruler((100.0, 100.0), (300.0, 100.0)), color: [255, 0, 0], width: 40.0 };
+    let (_, t, _, _) = ruler.bounds(None, None);
+    c.ok("fix2: ruler bounds cover round tick caps", t <= 100.0 - 56.0);
+    c.ok("fix2: ruler tick end is clickable", ruler.hit((100.0, 45.0), 1.0, None, None));
+
+    // Фигура далеко за краем не губит проект: пропадает только она.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        drag(&mut s, 0, (200.0, 300.0), (300.0, 300.0));
+        let (mut h, shot) = s.project_parts().unwrap();
+        h.shapes.push(Shape { kind: Kind::Text { at: (-1.0e6, 10.0), text: "far".into() }, color: [1, 2, 3], width: 4.0 });
+        let bytes = crate::project::build(h, &shot).unwrap();
+        let p = Session::from_project(&bytes, 0, 0, 1.0, 0.5, None);
+        c.ok("fix2: far shape dropped, project opens", p.is_ok_and(|p| p.shapes().len() == 1));
+    }
+
+    // Стрелки клавиатуры: целые шаги, фигура остаётся касаться монитора.
+    {
+        let mut s = fresh(None);
+        s.width = 3.0;
+        s.on_key(Some(KeyCode::Digit5), None, None);
+        drag(&mut s, 0, (600.0, 200.0), (640.0, 240.0));
+        s.on_key(Some(KeyCode::KeyV), None, None);
+        click(&mut s, 600.0, 220.0);
+        s.mods = Mods { shift: true, ..Default::default() };
+        for _ in 0..100 {
+            s.on_key(None, Some(NamedKey::ArrowRight), None);
+        }
+        s.mods = Mods::default();
+        // Край штриха (a.x - 1,5) упирается в край монитора, шаги целые.
+        let ok = matches!(s.shapes()[0].kind, Kind::Rect(a, _) if a.0 == a.0.round() && a.0 - 1.5 <= 1000.0 && a.0 > 990.0);
+        c.ok("fix2: nudge keeps whole pixels and stays on the monitor", ok);
     }
 }

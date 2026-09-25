@@ -251,7 +251,8 @@ fn shape(o: &mut String, s: &Shape, font: Option<&FontVec>, mm: Option<f32>) {
         Kind::Arrow(a, b) => arrow(o, *a, *b, c, w),
         // Нулевая ширина или высота: SVG такую рамку и эллипс не рисует, а PNG рисует
         // полоску толщиной в линию. Пишем линией.
-        Kind::Rect(a, b) | Kind::Ellipse(a, b) if ltrb(*a, *b).2 == 0.0 || ltrb(*a, *b).3 == 0.0 => {
+        // Сравнение после округления до сотых, как пишутся числа (n): 0,004 тоже ноль.
+        Kind::Rect(a, b) | Kind::Ellipse(a, b) if ltrb(*a, *b).2 < 0.02 || ltrb(*a, *b).3 < 0.02 => {
             let (x, y, rw, rh) = ltrb(*a, *b);
             let _ = writeln!(o, r#"<line x1="{}" y1="{}" x2="{}" y2="{}" {}/>"#, n(x), n(y), n(x + rw), n(y + rh), stroke(c, w));
         }
@@ -361,7 +362,7 @@ fn ruler(o: &mut String, a: Pt, b: Pt, c: [u8; 3], w: f32, font: Option<&FontVec
     if len < 1.0 {
         return;
     }
-    let lw = (w * 0.5).max(1.5);
+    let lw = shapes::ruler_lw(w);
     let (px, py) = (-dy / len, dx / len);
     let t = shapes::ruler_tick(w);
     let _ = writeln!(o, "<g>");

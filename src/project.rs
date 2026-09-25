@@ -125,25 +125,30 @@ fn sanitize(h: &mut Header) -> Result<(), String> {
     }
     h.line_width = h.line_width.clamp(1.0, 40.0);
     h.color &= 0xFF_FFFF;
-    for s in &mut h.shapes {
+    // Фигура с неверной толщиной или координатами (например, уведённая далеко за
+    // край) пропадает одна, проект открывается: иначе теряется вся разметка.
+    let before = h.shapes.len();
+    h.shapes.retain_mut(|s| {
         if !s.width.is_finite() {
-            return bad("неверная толщина");
+            return false;
         }
         s.width = s.width.clamp(1.0, 40.0);
-        let pts_ok = match &s.kind {
-            Kind::Pencil(p) | Kind::Marker(p) => {
-                points += p.len();
-                p.iter().all(ok_pt)
-            }
+        match &s.kind {
+            Kind::Pencil(p) | Kind::Marker(p) => p.iter().all(ok_pt),
             Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Pixelate(a, b) | Kind::FilledRect(a, b) | Kind::Ellipse(a, b) => {
                 ok_pt(a) && ok_pt(b)
             }
             Kind::Counter { at, n, tip } => ok_pt(at) && tip.as_ref().is_none_or(ok_pt) && *n <= 10_000,
             Kind::Ruler(a, b) => ok_pt(a) && ok_pt(b),
             Kind::Text { at, text } => ok_pt(at) && text.chars().count() <= MAX_TEXT,
-        };
-        if !pts_ok {
-            return bad("неверные координаты фигуры");
+        }
+    });
+    if h.shapes.len() < before {
+        log::warn!("project: dropped {} shapes with invalid width or coordinates", before - h.shapes.len());
+    }
+    for s in &h.shapes {
+        if let Kind::Pencil(p) | Kind::Marker(p) = &s.kind {
+            points += p.len();
         }
     }
     if points > MAX_POINTS {

@@ -45,11 +45,13 @@ enum Drag {
     /// Перетаскивание фигуры k от точки start. orig: фигура до правки (к ней считается
     /// сдвиг и к ней возвращает отмена); depth: длина стека отмены после записи
     /// состояния (None: ещё не двигали).
-    ShapeMove { k: usize, start: Pt, orig: Shape, depth: Option<usize> },
+    /// redo: ветка повтора на момент первого сдвига, Esc её возвращает.
+    ShapeMove { k: usize, start: Pt, orig: Shape, depth: Option<usize>, redo: Vec<Redo> },
     /// Ручка фигуры k (номер как в Shape::handles), от исходной фигуры orig.
-    ShapeHandle { k: usize, handle: usize, orig: Shape, depth: Option<usize> },
-    /// Панель инструментов тянут за заголовок: смещение курсора от её угла; moved: уже тянули.
-    Panel { grab: Pt, moved: bool },
+    ShapeHandle { k: usize, handle: usize, orig: Shape, depth: Option<usize>, redo: Vec<Redo> },
+    /// Панель инструментов тянут за заголовок: смещение курсора от её угла, точка
+    /// нажатия; moved: сдвинули дальше порога (дрожь руки не считается).
+    Panel { grab: Pt, start: Pt, moved: bool },
 }
 
 /// Масштаб и сдвиг вида монитора (Ctrl + колесо). Точка экрана (x, y)
@@ -93,6 +95,13 @@ struct TextEdit {
 /// Сколько состояний фигур хранить для отмены.
 const UNDO_MAX: usize = 200;
 
+/// Шаг повтора: состояние целиком или фигура открытого проекта, снятая Ctrl+Z
+/// (без копии всего списка: у проекта из файла их может быть 10 000).
+enum Redo {
+    State(Vec<Shape>),
+    Popped(Shape),
+}
+
 /// Серия однотипных правок выбранной фигуры (колесо, стрелки) отменяется разом.
 #[derive(Clone, Copy, PartialEq)]
 enum Series {
@@ -119,7 +128,7 @@ pub struct Session {
     shapes: Vec<Shape>,
     /// Состояния фигур до изменений (Ctrl+Z) и отменённые (Ctrl+Shift+Z).
     undo_stack: Vec<Vec<Shape>>,
-    redo: Vec<Vec<Shape>>,
+    redo: Vec<Redo>,
     /// Выбранная фигура в режиме выделения.
     picked: Option<usize>,
     /// Последний клик по фигуре: повторный клик по тексту открывает его на правку.
@@ -154,6 +163,8 @@ pub struct Session {
     shapes_mon: Option<usize>,
     /// Фигуры открытого проекта: когда записи отмены кончились, Ctrl+Z снимает их по одной.
     pop_loaded: bool,
+    /// Области автоскрытия, пришедшие во время переноса фигуры: применятся после него.
+    pending_hide: Vec<Rect>,
     /// Последний клик по заголовку панели: двойной возвращает её к выделению.
     grip_click: Option<std::time::Instant>,
 }
@@ -256,6 +267,7 @@ impl Session {
             grip_click: None,
             shapes_mon: None,
             pop_loaded: false,
+            pending_hide: Vec::new(),
         }
     }
 
@@ -436,16 +448,27 @@ impl Session {
 
     /// Запомнить фигуры перед изменением (для Ctrl+Z); ветка повтора теряет смысл.
     fn snapshot(&mut self) {
-        self.push_undo(self.shapes.clone());
+        let mut st = self.shapes.clone();
+        // Открыт на правку готовый текст (автоскрытие пришло посреди правки): в записи
+        // он стоит на своём месте, как до правки.
+        if let Some(TextEdit { reedit: Some((i, orig)), .. }) = &self.text {
+            st.insert((*i).min(st.len()), orig.clone());
+        }
+        self.push_undo(st);
     }
 
     fn push_undo(&mut self, state: Vec<Shape>) {
         self.undo_stack.push(state);
-        if self.undo_stack.len() > UNDO_MAX {
-            self.undo_stack.remove(0);
-        }
+        self.cap_undo();
         self.redo.clear();
         self.series = None;
+    }
+
+    fn cap_undo(&mut self) {
+        if self.undo_stack.len() > UNDO_MAX {
+            let extra = self.undo_stack.len() - UNDO_MAX;
+            self.undo_stack.drain(..extra);
+        }
     }
 
     /// Правка выбранной фигуры в серии: записать состояние только в её начале.
@@ -509,8 +532,14 @@ impl Session {
 
     fn redo_last(&mut self) {
         self.commit_text();
-        if let Some(next) = self.redo.pop() {
-            self.undo_stack.push(std::mem::replace(&mut self.shapes, next));
+        match self.redo.pop() {
+            Some(Redo::State(next)) => {
+                self.undo_stack.push(std::mem::replace(&mut self.shapes, next));
+                self.cap_undo();
+            }
+            // Снятая фигура проекта: вернуть; следующий Ctrl+Z снова снимет её.
+            Some(Redo::Popped(s)) => self.shapes.push(s),
+            None => {}
         }
         self.picked = None;
         self.series = None;
@@ -544,11 +573,12 @@ impl Session {
             }
             None => {
                 if let Some(prev) = self.undo_stack.pop() {
-                    self.redo.push(std::mem::replace(&mut self.shapes, prev));
-                } else if self.pop_loaded && !self.shapes.is_empty() {
+                    self.redo.push(Redo::State(std::mem::replace(&mut self.shapes, prev)));
+                } else if self.pop_loaded {
                     // Записи кончились, остались фигуры открытого проекта: по одной с конца.
-                    let prev = self.shapes[..self.shapes.len() - 1].to_vec();
-                    self.redo.push(std::mem::replace(&mut self.shapes, prev));
+                    if let Some(last) = self.shapes.pop() {
+                        self.redo.push(Redo::Popped(last));
+                    }
                 }
             }
         }
@@ -646,7 +676,11 @@ impl Session {
         self.cursor = Some((mon, (x, y)));
         self.mark(mon);
 
-        if let Drag::Panel { grab, moved } = &mut self.drag {
+        let jitter = 4.0 * self.scales[mon];
+        if let Drag::Panel { grab, start, moved } = &mut self.drag {
+            if !*moved && dist((x, y), *start) < jitter {
+                return;
+            }
             *moved = true;
             self.tools_at = Some((mon, (x - grab.0, y - grab.1)));
             return;
@@ -671,7 +705,7 @@ impl Session {
             // Правка выбранной фигуры: всегда от исходной фигуры (угол можно провести
             // за противоположную сторону), состояние для отмены пишется при первом сдвиге.
             let edit = match &self.drag {
-                Drag::ShapeMove { k, start, orig, depth } => {
+                Drag::ShapeMove { k, start, orig, depth, .. } => {
                     let d = (p.0 - start.0, p.1 - start.1);
                     (depth.is_some() || d != (0.0, 0.0)).then(|| {
                         let mut sh = orig.clone();
@@ -679,7 +713,7 @@ impl Session {
                         (*k, sh, depth.is_none())
                     })
                 }
-                Drag::ShapeHandle { k, handle, orig, depth } => {
+                Drag::ShapeHandle { k, handle, orig, depth, .. } => {
                     let mut sh = orig.clone();
                     sh.set_handle(*handle, p);
                     Some((*k, sh, depth.is_none()))
@@ -688,10 +722,12 @@ impl Session {
             };
             if let Some((k, sh, first)) = edit {
                 if first {
+                    let saved = std::mem::take(&mut self.redo);
                     self.snapshot();
                     let n = self.undo_stack.len();
-                    if let Drag::ShapeMove { depth, .. } | Drag::ShapeHandle { depth, .. } = &mut self.drag {
+                    if let Drag::ShapeMove { depth, redo, .. } | Drag::ShapeHandle { depth, redo, .. } = &mut self.drag {
                         *depth = Some(n);
+                        *redo = saved;
                     }
                 }
                 if let Some(slot) = self.shapes.get_mut(k) {
@@ -814,7 +850,7 @@ impl Session {
                     }
                     self.grip_click = Some(now);
                     let v = l.panels[0];
-                    self.drag = Drag::Panel { grab: (x - v.left(), y - v.top()), moved: false };
+                    self.drag = Drag::Panel { grab: (x - v.left(), y - v.top()), start: (x, y), moved: false };
                     return Action::None;
                 }
                 if l.over_panel(x, y) {
@@ -834,7 +870,7 @@ impl Session {
         if on_active && self.tool == Tool::Pointer {
             // Выбранная фигура: ручки важнее рамки выделения.
             if let (Some(h), Some(k)) = (self.picked_handle(mon, p), self.picked) {
-                self.drag = Drag::ShapeHandle { k, handle: h, orig: self.shapes[k].clone(), depth: None };
+                self.drag = Drag::ShapeHandle { k, handle: h, orig: self.shapes[k].clone(), depth: None, redo: Vec::new() };
                 return Action::None;
             }
             // Клик по фигуре выбирает её; повторный клик по тексту открывает правку.
@@ -852,7 +888,7 @@ impl Session {
                 }
                 self.picked = Some(k);
                 self.series = None;
-                self.drag = Drag::ShapeMove { k, start: p, orig: self.shapes[k].clone(), depth: None };
+                self.drag = Drag::ShapeMove { k, start: p, orig: self.shapes[k].clone(), depth: None, redo: Vec::new() };
                 self.mark_sel();
                 return Action::None;
             }
@@ -984,7 +1020,8 @@ impl Session {
             }
             // Панель тянули: следующий клик по заголовку не двойной.
             Drag::Panel { moved: true, .. } => self.grip_click = None,
-            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } | Drag::Panel { .. } | Drag::None => {}
+            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } => self.apply_pending_hide(),
+            Drag::Panel { .. } | Drag::None => {}
         }
         self.sync();
         self.mark_sel();
@@ -1040,18 +1077,30 @@ impl Session {
             }
             // Фигуру уже двигали: вернуть её как была. Запись отмены, сделанную в начале
             // переноса, убрать, только если после неё ничего не записывали (автоскрытие).
-            Drag::ShapeMove { k, orig, depth: Some(d), .. } | Drag::ShapeHandle { k, orig, depth: Some(d), .. } => {
+            Drag::ShapeMove { k, orig, depth: Some(d), redo, .. } | Drag::ShapeHandle { k, orig, depth: Some(d), redo, .. } => {
                 if let Some(slot) = self.shapes.get_mut(k) {
                     *slot = orig;
                 }
                 if self.undo_stack.len() == d {
                     self.undo_stack.pop();
+                    // Переноса не было: и повтор как до него.
+                    self.redo = redo;
                 }
+                self.apply_pending_hide();
             }
+            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } => self.apply_pending_hide(),
             _ => {}
         }
         self.mark_sel();
         Action::None
+    }
+
+    /// Автоскрытие, отложенное на время переноса фигуры.
+    fn apply_pending_hide(&mut self) {
+        if !self.pending_hide.is_empty() {
+            let rects = std::mem::take(&mut self.pending_hide);
+            self.apply_hide(&rects);
+        }
     }
 
     /// Ctrl + колесо: приблизить вид монитора к точке под курсором (экранные x, y).
@@ -1120,11 +1169,8 @@ impl Session {
 
     /// Запикселить найденные области (координаты снимка). Каждая область отменяется отдельно.
     pub fn apply_hide(&mut self, rects: &[Rect]) -> usize {
-        // Открыт на правку готовый текст: вернуть его в список, иначе записи отмены
-        // от скрытия окажутся без этого текста.
-        if self.text.as_ref().is_some_and(|t| t.reedit.is_some()) {
-            self.commit_text();
-        }
+        // Правка открытого на редактирование текста не прерывается: snapshot() сам
+        // кладёт исходный текст в записи отмены.
         let c = draw::rgb(self.color);
         // Уже запикселенное повторно не закрываем (автоскрытие после расширения выделения).
         let covered = |r: &Rect, shapes: &[Shape]| {
@@ -1138,6 +1184,12 @@ impl Session {
                 _ => false,
             })
         };
+        // Фигуру тащат: применим после переноса (запись отмены переноса не смешается
+        // со скрытием), а сейчас только посчитаем для строки статуса.
+        if matches!(self.drag, Drag::ShapeMove { .. } | Drag::ShapeHandle { .. }) {
+            self.pending_hide.extend_from_slice(rects);
+            return rects.iter().filter(|r| !covered(r, &self.shapes)).count();
+        }
         let mut added = 0;
         for r in rects {
             if covered(r, &self.shapes) {
@@ -1252,11 +1304,12 @@ impl Session {
                 // Фигура не уезжает с монитора целиком: иначе проект потом не откроется.
                 let (w, h) = self.active.map_or((0, 0), |m| self.shot_size(m));
                 let mm = self.active.and_then(|m| self.mm[m]);
-                let (l, t, r, b) = self.shapes[k].bounds(self.font.as_deref(), mm);
+                let (l, t, r, b) = self.shapes[k].extent(self.font.as_deref(), mm);
                 // Шаг не дальше, чем пока фигура касается монитора; обратно всегда можно.
+                // Целые пиксели: фигура остаётся на своей сетке.
                 let lim = |d: f32, lo: f32, hi: f32| if d < 0.0 { d.max(lo.min(0.0)) } else { d.min(hi.max(0.0)) };
-                let dx = lim(dx, -r, w as f32 - l);
-                let dy = lim(dy, -b, h as f32 - t);
+                let dx = lim(dx, -r, w as f32 - l).trunc();
+                let dy = lim(dy, -b, h as f32 - t).trunc();
                 if dx == 0.0 && dy == 0.0 {
                     return Action::None;
                 }
@@ -1280,15 +1333,16 @@ impl Session {
                 KeyCode::KeyC if sel => Action::Copy,
                 KeyCode::KeyS if sel && self.mods.shift => Action::QuickSave,
                 KeyCode::KeyS if sel => Action::Save,
-                KeyCode::KeyZ if self.mods.shift => {
+                // Без выделения разметку не видно: отмена вслепую не нужна.
+                KeyCode::KeyZ if sel && self.mods.shift => {
                     self.redo_last();
                     Action::None
                 }
-                KeyCode::KeyZ => {
+                KeyCode::KeyZ if sel => {
                     self.undo();
                     Action::None
                 }
-                KeyCode::KeyY => {
+                KeyCode::KeyY if sel => {
                     self.redo_last();
                     Action::None
                 }
@@ -1567,8 +1621,10 @@ impl Session {
             if t0.elapsed() < WIDTH_HINT {
                 // Образец выбранной фигуры или кисти.
                 let picked = self.picked.and_then(|k| self.shapes.get(k)).filter(|_| self.tool == Tool::Pointer);
-                let (t, w, c) = picked.map_or((self.tool, self.width, draw::rgb(self.color)), |sh| (Tool::of(&sh.kind), sh.width, sh.color));
-                ui::width_hint(frame, f, t, w, c, view.z, x, y, s);
+                if picked.is_none_or(|sh| sh.has_width()) {
+                    let (t, w, c) = picked.map_or((self.tool, self.width, draw::rgb(self.color)), |sh| (Tool::of(&sh.kind), sh.width, sh.color));
+                    ui::width_hint(frame, f, t, w, c, view.z, x, y, s);
+                }
             }
         }
 

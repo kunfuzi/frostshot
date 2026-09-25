@@ -166,8 +166,8 @@ impl Shape {
             Kind::Marker(_) => marker_width(self.width) / 2.0,
             // Наконечник стрелки шире линии.
             Kind::Arrow(..) => (self.width / 2.0).max(arrow_head(self.width) / 2.0),
-            // Засечки линейки поперёк линии.
-            Kind::Ruler(..) => ruler_tick(self.width),
+            // Засечки линейки поперёк линии, с круглыми концами штриха.
+            Kind::Ruler(..) => ruler_tick(self.width) + ruler_lw(self.width) / 2.0,
             _ => self.width / 2.0,
         };
         let grow = |(l, t, r, b): (f32, f32, f32, f32), d: f32| (l - d, t - d, r + d, b + d);
@@ -204,6 +204,15 @@ impl Shape {
         }
     }
 
+    /// Габарит самой геометрии для ограничения сдвига: у линии, стрелки и линейки
+    /// без запаса на толщину и наконечник (он раздувает габарит вдоль оси).
+    pub fn extent(&self, font: Option<&FontVec>, mm: Option<f32>) -> (f32, f32, f32, f32) {
+        match &self.kind {
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Ruler(a, b) => norm(*a, *b),
+            _ => self.bounds(font, mm),
+        }
+    }
+
     /// Попадает ли точка p в фигуру; tol: запас в пикселях снимка.
     /// Контурные фигуры ловятся по линии, закрашенные по площади.
     pub fn hit(&self, p: Pt, tol: f32, font: Option<&FontVec>, mm: Option<f32>) -> bool {
@@ -218,12 +227,18 @@ impl Shape {
             Kind::Pencil(pts) => near_poly(pts, d),
             Kind::Marker(pts) => near_poly(pts, marker_width(self.width) / 2.0 + tol),
             Kind::Line(a, b) => seg_dist(p, *a, *b) <= d,
-            // Наконечник: круг вокруг острия размером с наконечник.
-            Kind::Arrow(a, b) => seg_dist(p, *a, *b) <= d || seg_dist(p, *b, *b) <= arrow_head(self.width) / 2.0 + tol,
-            // Линейка: линия, засечки на концах, плашка с подписью.
+            // Наконечник: весь нарисованный треугольник (с запасом tol).
+            Kind::Arrow(a, b) => seg_dist(p, *a, *b) <= d || arrow_head_tri(*a, *b, self.width).is_some_and(|tri| near_tri(p, tri, tol)),
+            // Линейка: линия, засечки на концах (толщиной в штрих), плашка с подписью.
             Kind::Ruler(a, b) => {
-                let t = ruler_tick(self.width);
-                seg_dist(p, *a, *b) <= d || seg_dist(p, *a, *a) <= t + tol || seg_dist(p, *b, *b) <= t + tol || {
+                let lw = ruler_lw(self.width) / 2.0 + tol;
+                let len = seg_dist(*a, *b, *b);
+                let ticks = len >= 1.0 && {
+                    let t = ruler_tick(self.width);
+                    let (px, py) = (-(b.1 - a.1) / len * t, (b.0 - a.0) / len * t);
+                    [*a, *b].iter().any(|e| seg_dist(p, (e.0 - px, e.1 - py), (e.0 + px, e.1 + py)) <= lw)
+                };
+                seg_dist(p, *a, *b) <= lw.max(d) || ticks || {
                     font.and_then(|f| ruler_plate(*a, *b, self.width, f, mm))
                         .is_some_and(|pl| inside((pl.x, pl.y, pl.x + pl.w, pl.y + pl.h)))
                 }
@@ -234,14 +249,16 @@ impl Shape {
             }
             Kind::Ellipse(a, b) => {
                 let (l, t, r, bb) = norm(*a, *b);
-                let (cx, cy, rx, ry) = ((l + r) / 2.0, (t + bb) / 2.0, ((r - l) / 2.0).max(0.5), ((bb - t) / 2.0).max(0.5));
-                // Расстояние до контура по Сампсону |f| / |grad f|: верно и у вытянутого
-                // эллипса, где (k - 1) * min(rx, ry) раздувало зону у концов в rx/ry раз.
-                let (dx, dy) = (p.0 - cx, p.1 - cy);
-                let f = (dx / rx).powi(2) + (dy / ry).powi(2) - 1.0;
-                let g = ((2.0 * dx / (rx * rx)).powi(2) + (2.0 * dy / (ry * ry)).powi(2)).sqrt();
-                let dist = if g > 1e-6 { f.abs() / g } else { rx.min(ry) };
-                dist <= d
+                // Расстояние до контура по ломаной из 72 точек: верно и для вытянутого,
+                // плоского и маленького эллипса (формулы-приближения врут на краях).
+                let (cx, cy, rx, ry) = ((l + r) / 2.0, (t + bb) / 2.0, (r - l) / 2.0, (bb - t) / 2.0);
+                let pts: Vec<Pt> = (0..=72)
+                    .map(|i| {
+                        let a = i as f32 / 72.0 * std::f32::consts::TAU;
+                        (cx + rx * a.cos(), cy + ry * a.sin())
+                    })
+                    .collect();
+                near_poly(&pts, d)
             }
             Kind::FilledRect(a, b) | Kind::Pixelate(a, b) => inside(norm(*a, *b)),
             Kind::Text { .. } => inside(self.bounds(font, None)),
@@ -440,6 +457,33 @@ pub fn ruler_tick(w: f32) -> f32 {
     6.0 + w
 }
 
+/// Толщина штриха линейки и засечек.
+pub fn ruler_lw(w: f32) -> f32 {
+    (w * 0.5).max(1.5)
+}
+
+/// Треугольник наконечника стрелки a -> b: остриё и два угла основания.
+pub fn arrow_head_tri(a: Pt, b: Pt, w: f32) -> Option<[Pt; 3]> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1.0 {
+        return None;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let head = arrow_head(w).min(len);
+    let half = head * 0.5;
+    let base = (b.0 - ux * head, b.1 - uy * head);
+    Some([b, (base.0 - uy * half, base.1 + ux * half), (base.0 + uy * half, base.1 - ux * half)])
+}
+
+/// Точка внутри треугольника или не дальше tol от его сторон.
+fn near_tri(p: Pt, [a, b, c]: [Pt; 3], tol: f32) -> bool {
+    let cross = |o: Pt, u: Pt, v: Pt| (u.0 - o.0) * (v.1 - o.1) - (u.1 - o.1) * (v.0 - o.0);
+    let (d1, d2, d3) = (cross(a, b, p), cross(b, c, p), cross(c, a, p));
+    let inside = !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0));
+    inside || seg_dist(p, a, b) <= tol || seg_dist(p, b, c) <= tol || seg_dist(p, c, a) <= tol
+}
+
 /// Плашка подписи линейки: текст, кегль, прямоугольник (x, y, w, h), отступ текста.
 pub struct Plate {
     pub text: String,
@@ -476,7 +520,7 @@ fn ruler(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, font: Option<&FontVec>, 
     if len < 1.0 {
         return;
     }
-    let lw = (w * 0.5).max(1.5);
+    let lw = ruler_lw(w);
     let (px, py) = (-dy / len, dx / len);
     let t = ruler_tick(w);
     draw::line(pm, a.0, a.1, b.0, b.1, c, 1.0, lw, clip);
