@@ -285,6 +285,7 @@ impl Session {
 
     /// Освободить производные буферы (затемнение, кадры): сессия хранится до повторного открытия.
     pub fn hibernate(&mut self) {
+        self.finish_shape_drag();
         self.commit_text();
         self.dimmed = Vec::new();
         self.base = Vec::new();
@@ -448,13 +449,18 @@ impl Session {
 
     /// Запомнить фигуры перед изменением (для Ctrl+Z); ветка повтора теряет смысл.
     fn snapshot(&mut self) {
+        let st = self.snapshot_state();
+        self.push_undo(st);
+    }
+
+    /// Фигуры для записи отмены. Открыт на правку готовый текст (автоскрытие пришло
+    /// посреди правки): в записи он стоит на своём месте, как до правки.
+    fn snapshot_state(&self) -> Vec<Shape> {
         let mut st = self.shapes.clone();
-        // Открыт на правку готовый текст (автоскрытие пришло посреди правки): в записи
-        // он стоит на своём месте, как до правки.
         if let Some(TextEdit { reedit: Some((i, orig)), .. }) = &self.text {
             st.insert((*i).min(st.len()), orig.clone());
         }
-        self.push_undo(st);
+        st
     }
 
     fn push_undo(&mut self, state: Vec<Shape>) {
@@ -608,6 +614,7 @@ impl Session {
             self.undo_stack.clear();
             self.redo.clear();
             self.pop_loaded = false;
+            self.pending_hide.clear();
         }
         self.shapes_mon = Some(mon);
         self.picked = None;
@@ -723,7 +730,11 @@ impl Session {
             if let Some((k, sh, first)) = edit {
                 if first {
                     let saved = std::mem::take(&mut self.redo);
-                    self.snapshot();
+                    // Без обрезки до UNDO_MAX: Esc уберёт запись и самая старая уцелеет,
+                    // обрезка при отпускании.
+                    let st = self.snapshot_state();
+                    self.undo_stack.push(st);
+                    self.series = None;
                     let n = self.undo_stack.len();
                     if let Drag::ShapeMove { depth, redo, .. } | Drag::ShapeHandle { depth, redo, .. } = &mut self.drag {
                         *depth = Some(n);
@@ -829,6 +840,8 @@ impl Session {
     }
 
     pub fn on_left_press(&mut self, mon: usize, x: f32, y: f32) -> Action {
+        // Отпускание потерялось (окно потеряло мышь посреди переноса): закончить перенос.
+        self.finish_shape_drag();
         self.on_move(mon, x, y);
         let (ix, iy) = self.views[mon].to_img(x, y);
         let p = self.clamp(mon, (ix, iy));
@@ -1020,7 +1033,10 @@ impl Session {
             }
             // Панель тянули: следующий клик по заголовку не двойной.
             Drag::Panel { moved: true, .. } => self.grip_click = None,
-            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } => self.apply_pending_hide(),
+            Drag::ShapeMove { .. } | Drag::ShapeHandle { .. } => {
+                self.cap_undo();
+                self.apply_pending_hide();
+            }
             Drag::Panel { .. } | Drag::None => {}
         }
         self.sync();
@@ -1046,6 +1062,7 @@ impl Session {
             self.redo.clear();
             self.shapes_mon = None;
             self.pop_loaded = false;
+            self.pending_hide.clear();
             self.text = None;
             self.base_dirty[a] = true;
             self.mark(a);
@@ -1093,6 +1110,16 @@ impl Session {
         }
         self.mark_sel();
         Action::None
+    }
+
+    /// Перенос фигуры закончен не отпусканием кнопки (усыпление, новый клик без
+    /// отпускания): как отпускание, фигура остаётся где есть.
+    fn finish_shape_drag(&mut self) {
+        if matches!(self.drag, Drag::ShapeMove { .. } | Drag::ShapeHandle { .. }) {
+            self.drag = Drag::None;
+            self.cap_undo();
+        }
+        self.apply_pending_hide();
     }
 
     /// Автоскрытие, отложенное на время переноса фигуры.

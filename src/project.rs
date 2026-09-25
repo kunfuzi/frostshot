@@ -140,7 +140,9 @@ fn sanitize(h: &mut Header) -> Result<(), String> {
             }
             Kind::Counter { at, n, tip } => ok_pt(at) && tip.as_ref().is_none_or(ok_pt) && *n <= 10_000,
             Kind::Ruler(a, b) => ok_pt(a) && ok_pt(b),
-            Kind::Text { at, text } => ok_pt(at) && text.chars().count() <= MAX_TEXT,
+            // Длинный текст можно увести за край на всю его ширину: угол текста
+            // проверяем с большим запасом (рисование обрезается, стоимость от длины).
+            Kind::Text { at, text } => at.0.is_finite() && at.1.is_finite() && at.0.abs() <= 1.0e6 && at.1.abs() <= 1.0e6 && text.chars().count() <= MAX_TEXT,
         }
     });
     if h.shapes.len() < before {

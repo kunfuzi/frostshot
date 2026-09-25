@@ -1014,11 +1014,48 @@ fn fixes2_check(c: &mut Check, font: Option<Arc<ab_glyph::FontVec>>) {
         s.on_key(Some(KeyCode::Digit3), None, None);
         drag(&mut s, 0, (200.0, 300.0), (300.0, 300.0));
         let (mut h, shot) = s.project_parts().unwrap();
-        h.shapes.push(Shape { kind: Kind::Text { at: (-1.0e6, 10.0), text: "far".into() }, color: [1, 2, 3], width: 4.0 });
+        h.shapes.push(Shape { kind: Kind::Line((-1.0e6, 10.0), (5.0, 5.0)), color: [1, 2, 3], width: 4.0 });
         let bytes = crate::project::build(h, &shot).unwrap();
         let p = Session::from_project(&bytes, 0, 0, 1.0, 0.5, None);
         c.ok("fix2: far shape dropped, project opens", p.is_ok_and(|p| p.shapes().len() == 1));
     }
+
+    // Третий круг. Esc при переносе с полной историей не съедает старую запись.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        for i in 0..205 {
+            let y = 160.0 + i as f32;
+            drag(&mut s, 0, (200.0, y), (240.0, y));
+        }
+        s.on_key(Some(KeyCode::KeyV), None, None);
+        s.on_left_press(0, 220.0, 200.0);
+        s.on_move(0, 221.0, 200.0);
+        s.on_key(None, Some(NamedKey::Escape), None);
+        s.on_left_release(0, 221.0, 200.0);
+        for _ in 0..250 {
+            ctrl_z(&mut s, false);
+        }
+        c.ok("fix3: cancelled drag at the undo cap keeps 200 records", s.shapes().len() == 5);
+    }
+    // Усыпление посреди переноса: отложенное автоскрытие применяется.
+    {
+        let mut s = fresh(None);
+        s.on_key(Some(KeyCode::Digit3), None, None);
+        drag(&mut s, 0, (200.0, 300.0), (300.0, 300.0));
+        s.on_key(Some(KeyCode::KeyV), None, None);
+        s.on_left_press(0, 250.0, 300.0);
+        s.on_move(0, 260.0, 340.0);
+        s.apply_hide(&[tiny_skia::Rect::from_xywh(500.0, 200.0, 50.0, 20.0).unwrap()]);
+        s.hibernate();
+        s.wake();
+        c.ok("fix3: hibernate mid-drag applies pending auto-hide", count(&s, |k| matches!(k, Kind::Pixelate(..))) == 1);
+    }
+    let fat = Shape { kind: Kind::Arrow((100.0, 300.0), (500.0, 300.0)), color: [255, 0, 0], width: 40.0 };
+    c.ok("fix3: no arrow hit past its tip", !fat.hit((520.0, 300.0), 5.0, None, None) && fat.hit((480.0, 300.0), 5.0, None, None));
+    let big = Shape { kind: Kind::Ellipse((0.0, 100.0), (3840.0, 2060.0)), color: [255, 0, 0], width: 1.0 };
+    let th = 2.5f32.to_radians();
+    c.ok("fix3: big ellipse hit on its curve when zoomed", big.hit((1920.0 + 1920.0 * th.cos(), 1080.0 + 980.0 * th.sin()), 0.9375, None, None));
 
     // Стрелки клавиатуры: целые шаги, фигура остаётся касаться монитора.
     {

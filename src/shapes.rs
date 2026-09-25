@@ -228,7 +228,14 @@ impl Shape {
             Kind::Marker(pts) => near_poly(pts, marker_width(self.width) / 2.0 + tol),
             Kind::Line(a, b) => seg_dist(p, *a, *b) <= d,
             // Наконечник: весь нарисованный треугольник (с запасом tol).
-            Kind::Arrow(a, b) => seg_dist(p, *a, *b) <= d || arrow_head_tri(*a, *b, self.width).is_some_and(|tri| near_tri(p, tri, tol)),
+            // Стержень до основания наконечника (дальше он не нарисован), наконечник треугольником.
+            Kind::Arrow(a, b) => match arrow_head_tri(*a, *b, self.width) {
+                Some(tri) => {
+                    let base = ((tri[1].0 + tri[2].0) / 2.0, (tri[1].1 + tri[2].1) / 2.0);
+                    seg_dist(p, *a, base) <= d || near_tri(p, tri, tol)
+                }
+                None => seg_dist(p, *a, *b) <= d,
+            },
             // Линейка: линия, засечки на концах (толщиной в штрих), плашка с подписью.
             Kind::Ruler(a, b) => {
                 let lw = ruler_lw(self.width) / 2.0 + tol;
@@ -258,7 +265,9 @@ impl Shape {
                         (cx + rx * a.cos(), cy + ry * a.sin())
                     })
                     .collect();
-                near_poly(&pts, d)
+                // Хорды ломаной внутри кривой на R * (1 - cos(пол-шага)): добавим к запасу.
+                let chord = rx.abs().max(ry.abs()) * (1.0 - (std::f32::consts::PI / 72.0).cos());
+                near_poly(&pts, d + chord)
             }
             Kind::FilledRect(a, b) | Kind::Pixelate(a, b) => inside(norm(*a, *b)),
             Kind::Text { .. } => inside(self.bounds(font, None)),
