@@ -68,9 +68,14 @@ impl Btn {
     }
 }
 
+/// Панели в порядке наложения: позже = выше (панель инструментов, действий,
+/// меню сохранения, палитра). У каждой кнопки своя панель (owner): рисуются вместе,
+/// клик достаётся самой верхней панели под курсором.
 pub struct Layout {
     pub panels: Vec<Rect>,
     pub buttons: Vec<(Btn, Rect)>,
+    /// Номер панели каждой кнопки (параллельно buttons).
+    pub owner: Vec<usize>,
     /// Разделители групп инструментов.
     pub seps: Vec<Rect>,
     /// Заголовок панели инструментов: за него панель перетаскивают.
@@ -88,11 +93,28 @@ const TOOL_GROUPS: &[&[Btn]] = &[
 ];
 
 impl Layout {
-    pub fn hit(&self, x: f32, y: f32) -> Option<Btn> {
-        self.buttons.iter().find(|(_, r)| contains(r, x, y)).map(|(b, _)| *b)
+    /// Кнопка на панели в конец наложения (последняя добавленная панель).
+    fn add(&mut self, b: Btn, r: Rect) {
+        self.buttons.push((b, r));
+        self.owner.push(self.panels.len() - 1);
     }
+    /// Самая верхняя панель под точкой.
+    fn top_panel(&self, x: f32, y: f32) -> Option<usize> {
+        self.panels.iter().rposition(|r| contains(r, x, y))
+    }
+    /// Кнопка под точкой на самой верхней панели: то, что видно, то и нажимается.
+    pub fn hit(&self, x: f32, y: f32) -> Option<Btn> {
+        let top = self.top_panel(x, y);
+        self.buttons
+            .iter()
+            .zip(&self.owner)
+            .rev()
+            .find(|((_, r), o)| contains(r, x, y) && top.is_none_or(|t| **o == t))
+            .map(|((b, _), _)| *b)
+    }
+    /// Заголовок панели инструментов под точкой и не закрыт другой панелью.
     pub fn over_grip(&self, x: f32, y: f32) -> bool {
-        self.grip.is_some_and(|r| contains(&r, x, y))
+        self.grip.is_some_and(|r| contains(&r, x, y)) && self.top_panel(x, y) == Some(0)
     }
     pub fn over_panel(&self, x: f32, y: f32) -> bool {
         self.panels.iter().any(|r| contains(r, x, y))
@@ -113,7 +135,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     let b = (32.0 * s).round();
     let pad = (4.0 * s).round();
     let gap = (8.0 * s).round();
-    let mut out = Layout { panels: vec![], buttons: vec![], seps: vec![], grip: None };
+    let mut out = Layout { panels: vec![], buttons: vec![], owner: vec![], seps: vec![], grip: None };
     // Заголовок-хваталка над инструментами.
     let grip_h = (12.0 * s).round();
 
@@ -163,7 +185,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
         }
         for (i, it) in g.iter().enumerate() {
             let (c, r) = ((i % 2) as f32, (i / 2) as f32);
-            out.buttons.push((*it, Rect::from_xywh(gx + c * b, gy + r * b, b, b).unwrap()));
+            out.add(*it, Rect::from_xywh(gx + c * b, gy + r * b, b, b).unwrap());
         }
     }
 
@@ -185,7 +207,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
     }
     out.panels.push(hpanel);
     for (i, it) in hitems.iter().enumerate() {
-        out.buttons.push((*it, Rect::from_xywh(hx + pad + i as f32 * b, hy + pad, b, b).unwrap()));
+        out.add(*it, Rect::from_xywh(hx + pad + i as f32 * b, hy + pad, b, b).unwrap());
     }
 
     // Меню сохранения над (или под) панелью действий.
@@ -199,7 +221,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
         let my = if hpanel.top() - gap - mhh >= 0.0 { hpanel.top() - gap - mhh } else { hpanel.bottom() + gap };
         out.panels.push(Rect::from_xywh(mx, my, mw_, mhh).unwrap());
         for (i, it) in items.iter().enumerate() {
-            out.buttons.push((*it, Rect::from_xywh(mx + pad, my + pad + i as f32 * mh_item, mw_ - 2.0 * pad, mh_item).unwrap()));
+            out.add(*it, Rect::from_xywh(mx + pad, my + pad + i as f32 * mh_item, mw_ - 2.0 * pad, mh_item).unwrap());
         }
     }
 
@@ -210,7 +232,7 @@ pub fn layout(bbox: Rect, mw: f32, mh: f32, s: f32, palette_open: bool, save_men
         let px = if vx - gap - pw >= 0.0 { vx - gap - pw } else { vx + vw + gap };
         out.panels.push(Rect::from_xywh(px, cy, pw, b + 2.0 * pad).unwrap());
         for i in 0..PALETTE.len() {
-            out.buttons.push((Btn::Swatch(i), Rect::from_xywh(px + pad + i as f32 * b, cy + pad, b, b).unwrap()));
+            out.add(Btn::Swatch(i), Rect::from_xywh(px + pad + i as f32 * b, cy + pad, b, b).unwrap());
         }
     }
     out
@@ -228,23 +250,42 @@ pub struct UiState<'a> {
 
 pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
     let s = st.scale;
-    for p in &l.panels {
+    // Панель за панелью, каждая со своими кнопками: верхняя закрывает нижние целиком.
+    for (pi, p) in l.panels.iter().enumerate() {
         draw::fill_rounded(pm, *p, 6.0 * s, PANEL, 0.94);
+        if pi == 0 {
+            for r in &l.seps {
+                draw::fill_rect(pm, *r, HOVER, 1.0, None);
+            }
+            // Хваталка: два ряда точек посередине заголовка.
+            if let Some(g) = l.grip {
+                let (cx, cy) = (g.left() + g.width() / 2.0, g.top() + g.height() / 2.0 + s);
+                let d = 4.0 * s;
+                for i in -2..=2 {
+                    for j in [-0.5f32, 0.5] {
+                        draw::circle(pm, cx + i as f32 * d, cy + j * d, 1.1 * s, MUTED, 1.0, true, 0.0);
+                    }
+                }
+            }
+        }
+        for ((btn, r), _) in l.buttons.iter().zip(&l.owner).filter(|(_, o)| **o == pi) {
+            draw_button(pm, *btn, *r, st);
+        }
     }
-    for r in &l.seps {
-        draw::fill_rect(pm, *r, HOVER, 1.0, None);
-    }
-    // Хваталка: два ряда точек посередине заголовка.
-    if let Some(g) = l.grip {
-        let (cx, cy) = (g.left() + g.width() / 2.0, g.top() + g.height() / 2.0 + s);
-        let d = 4.0 * s;
-        for i in -2..=2 {
-            for j in [-0.5f32, 0.5] {
-                draw::circle(pm, cx + i as f32 * d, cy + j * d, 1.1 * s, MUTED, 1.0, true, 0.0);
+    if let (Some(h), Some(font)) = (st.hover, st.font) {
+        let tip = h.tooltip();
+        if !tip.is_empty() {
+            if let Some((_, r)) = l.buttons.iter().find(|(b, _)| *b == h) {
+                tooltip(pm, font, &tip, *r, s);
             }
         }
     }
-    for (btn, r) in &l.buttons {
+}
+
+fn draw_button(pm: &mut Pixmap, btn: Btn, r: Rect, st: &UiState) {
+    let s = st.scale;
+    let (btn, r) = (&btn, &r);
+    {
         let active = matches!(btn, Btn::Tool(t) if *t == st.tool);
         let r2 = r.inset(2.0 * s, 2.0 * s).unwrap_or(*r);
         if active {
@@ -275,14 +316,6 @@ pub fn draw_layout(pm: &mut Pixmap, l: &Layout, st: &UiState) {
                 draw::draw_text(pm, font, hint, r.right() - hw - 10.0 * s, hy, hs, MUTED, 1.0, None);
             }
             _ => icon(pm, *btn, *r, fg, st),
-        }
-    }
-    if let (Some(h), Some(font)) = (st.hover, st.font) {
-        let tip = h.tooltip();
-        if !tip.is_empty() {
-            if let Some((_, r)) = l.buttons.iter().find(|(b, _)| *b == h) {
-                tooltip(pm, font, &tip, *r, s);
-            }
         }
     }
 }

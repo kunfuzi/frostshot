@@ -38,6 +38,8 @@ pub struct Config {
     pub history: bool,
     pub history_max: usize,
     pub history_days: u32,
+    /// SVG: сохранять и фигуры целиком вне выделения (невидимые, за краем листа).
+    pub svg_outside: bool,
 }
 
 impl Default for Config {
@@ -64,6 +66,7 @@ impl Default for Config {
             history: true,
             history_max: 10,
             history_days: 7,
+            svg_outside: false,
         }
     }
 }

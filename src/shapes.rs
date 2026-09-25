@@ -160,9 +160,14 @@ fn norm(a: Pt, b: Pt) -> (f32, f32, f32, f32) {
 /// Правка готовых фигур в режиме выделения: попадание, габарит, ручки, сдвиг.
 impl Shape {
     /// Габарит (l, t, r, b) в координатах снимка, с учётом толщины линии.
-    pub fn bounds(&self, font: Option<&FontVec>) -> (f32, f32, f32, f32) {
+    /// mm: миллиметров на пиксель (подпись линейки влияет на её размер).
+    pub fn bounds(&self, font: Option<&FontVec>, mm: Option<f32>) -> (f32, f32, f32, f32) {
         let pad = match &self.kind {
             Kind::Marker(_) => marker_width(self.width) / 2.0,
+            // Наконечник стрелки шире линии.
+            Kind::Arrow(..) => (self.width / 2.0).max(arrow_head(self.width) / 2.0),
+            // Засечки линейки поперёк линии.
+            Kind::Ruler(..) => ruler_tick(self.width),
             _ => self.width / 2.0,
         };
         let grow = |(l, t, r, b): (f32, f32, f32, f32), d: f32| (l - d, t - d, r + d, b + d);
@@ -174,7 +179,14 @@ impl Shape {
                 }
                 grow(bb, pad)
             }
-            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Ellipse(a, b) | Kind::Ruler(a, b) => grow(norm(*a, *b), pad),
+            Kind::Ruler(a, b) => {
+                let bb = grow(norm(*a, *b), pad);
+                match font.and_then(|f| ruler_plate(*a, *b, self.width, f, mm)) {
+                    Some(pl) => (bb.0.min(pl.x), bb.1.min(pl.y), bb.2.max(pl.x + pl.w), bb.3.max(pl.y + pl.h)),
+                    None => bb,
+                }
+            }
+            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Rect(a, b) | Kind::Ellipse(a, b) => grow(norm(*a, *b), pad),
             Kind::FilledRect(a, b) | Kind::Pixelate(a, b) => norm(*a, *b),
             Kind::Text { at, text } => {
                 let size = font_size(self.width);
@@ -194,7 +206,7 @@ impl Shape {
 
     /// Попадает ли точка p в фигуру; tol: запас в пикселях снимка.
     /// Контурные фигуры ловятся по линии, закрашенные по площади.
-    pub fn hit(&self, p: Pt, tol: f32, font: Option<&FontVec>) -> bool {
+    pub fn hit(&self, p: Pt, tol: f32, font: Option<&FontVec>, mm: Option<f32>) -> bool {
         let near_poly = |pts: &[Pt], d: f32| match pts {
             [] => false,
             [a] => seg_dist(p, *a, *a) <= d,
@@ -205,7 +217,17 @@ impl Shape {
         match &self.kind {
             Kind::Pencil(pts) => near_poly(pts, d),
             Kind::Marker(pts) => near_poly(pts, marker_width(self.width) / 2.0 + tol),
-            Kind::Line(a, b) | Kind::Arrow(a, b) | Kind::Ruler(a, b) => seg_dist(p, *a, *b) <= d.max(6.0 + tol),
+            Kind::Line(a, b) => seg_dist(p, *a, *b) <= d,
+            // Наконечник: круг вокруг острия размером с наконечник.
+            Kind::Arrow(a, b) => seg_dist(p, *a, *b) <= d || seg_dist(p, *b, *b) <= arrow_head(self.width) / 2.0 + tol,
+            // Линейка: линия, засечки на концах, плашка с подписью.
+            Kind::Ruler(a, b) => {
+                let t = ruler_tick(self.width);
+                seg_dist(p, *a, *b) <= d || seg_dist(p, *a, *a) <= t + tol || seg_dist(p, *b, *b) <= t + tol || {
+                    font.and_then(|f| ruler_plate(*a, *b, self.width, f, mm))
+                        .is_some_and(|pl| inside((pl.x, pl.y, pl.x + pl.w, pl.y + pl.h)))
+                }
+            }
             Kind::Rect(a, b) => {
                 let (l, t, r, bb) = norm(*a, *b);
                 near_poly(&[(l, t), (r, t), (r, bb), (l, bb), (l, t)], d)
@@ -213,11 +235,16 @@ impl Shape {
             Kind::Ellipse(a, b) => {
                 let (l, t, r, bb) = norm(*a, *b);
                 let (cx, cy, rx, ry) = ((l + r) / 2.0, (t + bb) / 2.0, ((r - l) / 2.0).max(0.5), ((bb - t) / 2.0).max(0.5));
-                let k = (((p.0 - cx) / rx).powi(2) + ((p.1 - cy) / ry).powi(2)).sqrt();
-                (k - 1.0).abs() * rx.min(ry) <= d
+                // Расстояние до контура по Сампсону |f| / |grad f|: верно и у вытянутого
+                // эллипса, где (k - 1) * min(rx, ry) раздувало зону у концов в rx/ry раз.
+                let (dx, dy) = (p.0 - cx, p.1 - cy);
+                let f = (dx / rx).powi(2) + (dy / ry).powi(2) - 1.0;
+                let g = ((2.0 * dx / (rx * rx)).powi(2) + (2.0 * dy / (ry * ry)).powi(2)).sqrt();
+                let dist = if g > 1e-6 { f.abs() / g } else { rx.min(ry) };
+                dist <= d
             }
             Kind::FilledRect(a, b) | Kind::Pixelate(a, b) => inside(norm(*a, *b)),
-            Kind::Text { .. } => inside(self.bounds(font)),
+            Kind::Text { .. } => inside(self.bounds(font, None)),
             Kind::Counter { at, tip, .. } => {
                 let r = counter_radius(self.width);
                 seg_dist(p, *at, *at) <= r + tol || tip.is_some_and(|q| seg_dist(p, *at, q) <= r * 0.3 + tol)
@@ -403,6 +430,44 @@ pub fn ruler_font(w: f32) -> f32 {
     (16.0 + w * 1.5).max(18.0)
 }
 
+/// Длина наконечника стрелки (он же его ширина).
+pub fn arrow_head(w: f32) -> f32 {
+    (w * 4.0).max(14.0)
+}
+
+/// Засечка линейки: сколько торчит поперёк линии в каждую сторону.
+pub fn ruler_tick(w: f32) -> f32 {
+    6.0 + w
+}
+
+/// Плашка подписи линейки: текст, кегль, прямоугольник (x, y, w, h), отступ текста.
+pub struct Plate {
+    pub text: String,
+    pub size: f32,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub pad: f32,
+}
+
+/// Где стоит плашка подписи линейки: сбоку от середины, чтобы не закрывать линию.
+pub fn ruler_plate(a: Pt, b: Pt, w: f32, font: &FontVec, mm: Option<f32>) -> Option<Plate> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1.0 {
+        return None;
+    }
+    let (px, py) = (-dy / len, dx / len);
+    let text = ruler_label(a, b, mm);
+    let size = ruler_font(w);
+    let (tw, th) = draw::text_size(font, &text, size);
+    let pad = 6.0;
+    let off = ruler_tick(w) + th / 2.0 + pad;
+    let (mx, my) = ((a.0 + b.0) / 2.0 + px * off, (a.1 + b.1) / 2.0 + py * off);
+    Some(Plate { text, size, x: mx - tw / 2.0 - pad, y: my - th / 2.0 - pad / 2.0, w: tw + 2.0 * pad, h: th + pad, pad })
+}
+
 /// Линейка: тонкая линия, засечки на концах, подпись длины на плашке у середины.
 #[allow(clippy::too_many_arguments)]
 fn ruler(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, font: Option<&FontVec>, clip: Option<&Mask>, mm: Option<f32>) {
@@ -413,26 +478,19 @@ fn ruler(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, font: Option<&FontVec>, 
     }
     let lw = (w * 0.5).max(1.5);
     let (px, py) = (-dy / len, dx / len);
-    let t = 6.0 + w;
+    let t = ruler_tick(w);
     draw::line(pm, a.0, a.1, b.0, b.1, c, 1.0, lw, clip);
     for e in [a, b] {
         draw::line(pm, e.0 - px * t, e.1 - py * t, e.0 + px * t, e.1 + py * t, c, 1.0, lw, clip);
     }
-    if let Some(f) = font {
-        let text = ruler_label(a, b, mm);
-        let size = ruler_font(w);
-        let (tw, th) = draw::text_size(f, &text, size);
-        let pad = 6.0;
-        // Плашка сбоку от середины линии, чтобы не закрывать саму линию.
-        let off = t + th / 2.0 + pad;
-        let (mx, my) = ((a.0 + b.0) / 2.0 + px * off, (a.1 + b.1) / 2.0 + py * off);
-        if let Some(r) = tiny_skia::Rect::from_xywh(mx - tw / 2.0 - pad, my - th / 2.0 - pad / 2.0, tw + 2.0 * pad, th + pad) {
+    if let Some((f, pl)) = font.and_then(|f| ruler_plate(a, b, w, f, mm).map(|pl| (f, pl))) {
+        if let Some(r) = tiny_skia::Rect::from_xywh(pl.x, pl.y, pl.w, pl.h) {
             if let Some(p) = draw::rounded_rect(r, 5.0) {
                 pm.fill_path(&p, &draw::paint(c, 0.92), FillRule::Winding, Transform::identity(), clip);
             }
             let luma = 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32;
             let fg = if luma > 160.0 { [0x11, 0x11, 0x11] } else { [0xff, 0xff, 0xff] };
-            draw::draw_text(pm, f, &text, mx - tw / 2.0, my - th / 2.0, size, fg, 1.0, clip);
+            draw::draw_text(pm, f, &pl.text, pl.x + pl.pad, pl.y + pl.pad / 2.0, pl.size, fg, 1.0, clip);
         }
     }
 }
@@ -444,7 +502,7 @@ fn arrow(pm: &mut Pixmap, a: Pt, b: Pt, c: Rgb, w: f32, clip: Option<&Mask>) {
         return;
     }
     let (ux, uy) = (dx / len, dy / len);
-    let head = (w * 4.0).max(14.0).min(len);
+    let head = arrow_head(w).min(len);
     let half = head * 0.5;
     let base = (b.0 - ux * head, b.1 - uy * head);
     draw::line(pm, a.0, a.1, base.0 + ux * 1.0, base.1 + uy * 1.0, c, 1.0, w, clip);

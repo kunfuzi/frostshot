@@ -32,6 +32,7 @@ pub enum Ctl {
     History,
     HistoryClear,
     SaveOnCopy,
+    SvgOutside,
     DirChange,
     DirOpen,
     Template,
@@ -92,8 +93,10 @@ pub struct Settings {
 
 const TABS: [&str; 4] = ["Общие", "Сохранение", "Захват", "Клавиши"];
 
-const KEYS: [(&str, &str); 21] = [
-    ("V / L", "рамка / лассо"),
+const KEYS: [(&str, &str); 23] = [
+    ("V", "курсор: выбрать и двигать фигуры"),
+    ("M / L", "рамка / лассо"),
+    ("Delete, стрелки", "удалить, сдвинуть фигуру (Shift: 10 px)"),
     ("1-9, 0", "инструменты"),
     ("Shift + протягивание", "добавить область"),
     ("Alt + протягивание", "вырезать область"),
@@ -112,8 +115,8 @@ const KEYS: [(&str, &str); 21] = [
     ("Ctrl+C, Enter", "копировать"),
     ("Ctrl+S", "сохранить как"),
     ("Ctrl+Shift+S", "сохранить сразу"),
-    ("Правый клик", "сбросить выделение"),
-    ("Esc", "закрыть"),
+    ("Правый клик", "снять выбор фигуры, сбросить выделение"),
+    ("Esc", "снять выбор фигуры, закрыть"),
 ];
 
 fn contains(r: &Rect, x: f32, y: f32) -> bool {
@@ -259,6 +262,10 @@ impl Settings {
             }
             Some(Ctl::SaveOnCopy) => {
                 cfg.save_on_copy = !cfg.save_on_copy;
+                fx.save = true;
+            }
+            Some(Ctl::SvgOutside) => {
+                cfg.svg_outside = !cfg.svg_outside;
                 fx.save = true;
             }
             Some(Ctl::DirChange) => fx.choose_dir = true,
@@ -528,6 +535,9 @@ impl Settings {
             // Сохранение.
             1 => {
                 checkbox(pm, rects, &mut y, Ctl::SaveOnCopy, cfg.save_on_copy, "При копировании также сохранять в папку");
+                checkbox(pm, rects, &mut y, Ctl::SvgOutside, cfg.svg_outside, "SVG: сохранять и фигуры вне выделения");
+                text(pm, "Они за краем листа, в редакторе их видно и можно вернуть", pad + (f + 14.0) * s, y - 6.0 * s, small, MUTED);
+                y += gap_line;
                 y += 8.0 * s;
                 text(pm, "Папка", pad, y, small, MUTED);
                 y += gap_line;

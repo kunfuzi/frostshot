@@ -413,7 +413,7 @@ impl App {
             }
             Action::SaveSvg => {
                 let Some(ov) = self.overlay.as_mut() else { return };
-                let (svg, thumb) = match (ov.session.to_svg(), ov.session.result()) {
+                let (svg, thumb) = match (ov.session.to_svg(self.config.svg_outside), ov.session.result()) {
                     (Ok(s), Some(t)) => (s, t),
                     (Err(e), _) => {
                         log::error!("svg: {e}");
